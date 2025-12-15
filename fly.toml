@@ -1,0 +1,42 @@
+# fly.toml app configuration file generated for bulk-photo-match2
+# See https://fly.io/docs/reference/configuration/
+
+app = 'bulk-photo-match2'
+primary_region = 'syd'
+
+[build]
+  dockerfile = "Dockerfile"
+
+
+[env]
+  HOST = '0.0.0.0'
+  PORT = '3000'
+  SCOPES = 'write_products'
+  SHOPIFY_APP_URL = 'https://bulk-photo-match2.fly.dev'
+
+[processes]
+  app = "npm run docker-start"
+
+
+[[mounts]]
+  source = 'data'
+  destination = '/data'
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = '1GB'
+  auto_extend_size_limit = '10GB'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+
+  # IMPORTANT: keep one machine running to avoid Shopify iframe timeouts
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  processes = ['app']
+
+[[vm]]
+  memory = '1gb'
+  cpus = 1
+  memory_mb = 1024
