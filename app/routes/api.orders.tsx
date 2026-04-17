@@ -1,4 +1,3 @@
-import { json } from "@react-router/node";
 import type { LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
 
@@ -69,5 +68,5 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
-  return json({ orders });
+  return Response.json({ orders });
 };
