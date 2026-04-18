@@ -37,11 +37,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   }
                 }
               }
-              discountCodes {
-                code
-                amount
-                type
-              }
+              discountCodes
               discountApplications(first: 10) {
                 edges {
                   node {
@@ -109,7 +105,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const currencyCode = o.shippingLine?.originalPriceSet?.shopMoney?.currencyCode ?? "NZD";
 
         // Extract discount codes
-        const discountCodes = (o.discountCodes ?? []).map((d: any) => d.code);
+        const discountCodes = (o.discountCodes ?? []) as string[];
 
         // Check if any discount application targets shipping
         const shippingDiscounts = (o.discountApplications?.edges ?? [])
