@@ -29,9 +29,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   variant {
                     sku
                     title
-                    image {
-                      url
-                    }
                   }
                 }
               }
@@ -63,7 +60,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         quantity: le.node.quantity,
         sku: le.node.variant?.sku ?? "",
         variantTitle: le.node.variant?.title,
-        imageUrl: le.node.variant?.image?.url,
+        imageUrl: null,
       })),
     };
   });
