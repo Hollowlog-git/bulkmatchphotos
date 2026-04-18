@@ -94,24 +94,51 @@ export default function PackCheck() {
   const [showComplete, setShowComplete] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const packItemsRef = useRef<PackItem[]>([]);
 
+  // Keep ref in sync so keydown handler always has latest packItems
+  useEffect(() => {
+    packItemsRef.current = packItems;
+  }, [packItems]);
+
+  // Auto-focus scan box on mount and when pack items load
   useEffect(() => {
     setTimeout(() => scanRef.current?.focus(), 300);
   }, [packItems.length]);
 
+  // Global key capture — capture phase to beat Shopify iframe
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if already in an input, button, or select
       const tag = (e.target as HTMLElement).tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
-      // Ignore modifier keys, function keys, etc
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key.length > 1 && e.key !== "Backspace") return;
-      // Route to scan input
+      if (packItemsRef.current.length === 0) return;
+
+      e.preventDefault();
       scanRef.current?.focus();
+
+      if (e.key === "Backspace") {
+        setScanValue(prev => prev.slice(0, -1));
+        if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
+        return;
+      }
+
+      if (e.key.length === 1) {
+        setScanValue(prev => {
+          const next = prev + e.key;
+          if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
+          autoConfirmTimer.current = setTimeout(() => {
+            confirmScanDirect(next);
+          }, 300);
+          return next;
+        });
+      }
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, []); // empty deps — uses refs
 
   const fetchOrders = useCallback(async () => {
     setLoadingOrders(true);
@@ -203,6 +230,7 @@ export default function PackCheck() {
 
     const sorted = [...map.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     setPackItems(sorted);
+    setTimeout(() => scanRef.current?.focus(), 150);
   }
 
   const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
@@ -218,23 +246,25 @@ export default function PackCheck() {
     setScanValue(value);
     if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
     if (value.trim()) {
-      autoConfirmTimer.current = setTimeout(() => confirmScan(value), 300);
+      autoConfirmTimer.current = setTimeout(() => confirmScanDirect(value), 300);
     }
   }
 
-  function confirmScan(rawOverride?: string) {
+  // Core scan logic — takes raw string, works from both input and global keydown
+  function confirmScanDirect(raw: string) {
     if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
-    const raw = (rawOverride ?? scanValue).trim();
+    raw = raw.trim();
     if (!raw) return;
     const sku = normaliseSku(raw);
     setScanValue("");
 
-    if (!packItems.length) {
+    const items = packItemsRef.current;
+    if (!items.length) {
       setScanMsg({ text: "Load an order first.", tone: "warning" });
       return;
     }
 
-    const idx = packItems.findIndex(i =>
+    const idx = items.findIndex(i =>
       (i.sku && (i.sku === sku || i.sku === raw.toUpperCase())) ||
       i.title.toLowerCase() === raw.toLowerCase()
     );
@@ -257,11 +287,16 @@ export default function PackCheck() {
       } else {
         setScanMsg({ text: `✓ ${label} (${item.scanned}/${item.quantity})`, tone: "success" });
       }
+      packItemsRef.current = updated;
       return updated;
     });
 
-    setHistory(h => [...h, packItems[idx].sku || packItems[idx].title]);
+    setHistory(h => [...h, items[idx].sku || items[idx].title]);
     setTimeout(() => scanRef.current?.focus(), 50);
+  }
+
+  function confirmScan(rawOverride?: string) {
+    confirmScanDirect(rawOverride ?? scanValue);
   }
 
   function markPacked(item: PackItem) {
@@ -280,6 +315,7 @@ export default function PackCheck() {
       } else {
         setScanMsg({ text: `✓ ${key} (${u.scanned}/${u.quantity})`, tone: "success" });
       }
+      packItemsRef.current = updated;
       return updated;
     });
     setHistory(h => [...h, key]);
@@ -294,6 +330,7 @@ export default function PackCheck() {
       if (idx === -1) return prev;
       const updated = [...prev];
       updated[idx] = { ...updated[idx], scanned: Math.max(0, updated[idx].scanned - 1) };
+      packItemsRef.current = updated;
       return updated;
     });
     setScanMsg({ text: `↩ Undid: ${lastKey}`, tone: "warning" });
@@ -301,7 +338,9 @@ export default function PackCheck() {
   }
 
   function resetScans() {
-    setPackItems(prev => prev.map(i => ({ ...i, scanned: 0 })));
+    const reset = packItems.map(i => ({ ...i, scanned: 0 }));
+    setPackItems(reset);
+    packItemsRef.current = reset;
     setHistory([]);
     setScanMsg({ text: "Scans reset.", tone: "warning" });
     setShowComplete(false);
@@ -344,22 +383,15 @@ export default function PackCheck() {
                 </Text>
               </div>
 
-              {/* No shipping paid */}
               {noShippingPaid && (
                 <div style={{
-                  background: "#d72c0d",
-                  color: "#fff",
-                  borderRadius: 8,
-                  padding: "12px 16px",
-                  marginBottom: 10,
-                  fontWeight: 700,
-                  fontSize: 15,
+                  background: "#d72c0d", color: "#fff", borderRadius: 8,
+                  padding: "12px 16px", marginBottom: 10, fontWeight: 700, fontSize: 15,
                 }}>
                   ❌ NO SHIPPING PAID — Total shipping across all orders is $0.00
                 </div>
               )}
 
-              {/* Per-order shipping breakdown */}
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: allDiscountCodes.length > 0 ? 12 : 0 }}>
                 {selectedOrders.map(o => {
                   const issueBg = o.shippingAmount === 0 || o.hasShippingDiscount ? "#fff3cd" : "#f0fff4";
@@ -368,13 +400,9 @@ export default function PackCheck() {
                     <div key={o.id} style={{
                       background: issueBg,
                       border: `1px solid ${o.shippingAmount === 0 || o.hasShippingDiscount ? "#f0c040" : "#c3e6cb"}`,
-                      borderRadius: 6,
-                      padding: "10px 14px",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      flexWrap: "wrap",
-                      gap: 8,
+                      borderRadius: 6, padding: "10px 14px",
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      flexWrap: "wrap", gap: 8,
                     }}>
                       <div>
                         <span style={{ fontWeight: 700, marginRight: 8, color: "#333" }}>{o.name}</span>
@@ -390,16 +418,14 @@ export default function PackCheck() {
                           ${o.shippingAmount.toFixed(2)} {o.currencyCode}
                         </span>
                         {o.hasShippingDiscount && (
-                          <span style={{
-                            background: "#f0c040", color: "#856404",
-                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
-                          }}>DISCOUNT APPLIED</span>
+                          <span style={{ background: "#f0c040", color: "#856404", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4 }}>
+                            DISCOUNT APPLIED
+                          </span>
                         )}
                         {o.shippingWasFree && !o.hasShippingDiscount && (
-                          <span style={{
-                            background: "#ffc107", color: "#856404",
-                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
-                          }}>FREE SHIPPING SELECTED</span>
+                          <span style={{ background: "#ffc107", color: "#856404", fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4 }}>
+                            FREE SHIPPING SELECTED
+                          </span>
                         )}
                       </div>
                     </div>
@@ -407,26 +433,16 @@ export default function PackCheck() {
                 })}
               </div>
 
-              {/* Discount codes */}
               {allDiscountCodes.length > 0 && (
-                <div style={{
-                  background: "#fff3cd",
-                  border: "1px solid #f0c040",
-                  borderRadius: 8,
-                  padding: "12px 16px",
-                }}>
+                <div style={{ background: "#fff3cd", border: "1px solid #f0c040", borderRadius: 8, padding: "12px 16px" }}>
                   <div style={{ fontWeight: 700, fontSize: 14, color: "#856404", marginBottom: 6 }}>
                     🏷️ Promotional / Discount Codes Used:
                   </div>
                   {allDiscountCodes.map((d, i) => (
                     <div key={i} style={{ fontSize: 14, color: "#856404", marginBottom: 2 }}>
                       <strong>{d.orderName}:</strong> <code style={{
-                        background: "#fff",
-                        padding: "1px 6px",
-                        borderRadius: 4,
-                        border: "1px solid #f0c040",
-                        fontFamily: "monospace",
-                        fontWeight: 700,
+                        background: "#fff", padding: "1px 6px", borderRadius: 4,
+                        border: "1px solid #f0c040", fontFamily: "monospace", fontWeight: 700,
                       }}>{d.code}</code>
                     </div>
                   ))}
@@ -484,35 +500,26 @@ export default function PackCheck() {
                       <Badge tone="warning">No SKU — manual item</Badge>
                     </div>
                   )}
-                  <div style={{ fontSize: 15, color: "#333", marginBottom: 8 }}>
+                  <div style={{ fontSize: 15, color: "#333", marginBottom: 6 }}>
                     {nextItem.title}
                     {nextItem.variantTitle && nextItem.variantTitle !== "Default Title" ? ` · ${nextItem.variantTitle}` : ""}
                   </div>
                   {/jap/i.test(nextItem.title) && (
                     <div style={{ marginBottom: 8 }}>
                       <span style={{
-                        background: "#dc2626",
-                        color: "#fff",
-                        fontSize: 11,
-                        fontWeight: 700,
-                        padding: "2px 8px",
-                        borderRadius: 4,
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
+                        background: "#dc2626", color: "#fff", fontSize: 11, fontWeight: 700,
+                        padding: "2px 8px", borderRadius: 4, letterSpacing: "0.08em", textTransform: "uppercase",
                       }}>🇯🇵 Japanese</span>
                     </div>
                   )}
                   <InlineStack gap="300" blockAlign="center">
-                    <div style={{ fontSize: 13, color: "#888", marginBottom: scanMsg.text ? 8 : 0 }}>
+                    <div style={{ fontSize: 13, color: "#888" }}>
                       {nextItem.scanned}/{nextItem.quantity} packed
                       {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
                     </div>
                     {scanMsg.text && (
                       <div style={{
-                        padding: "8px 12px",
-                        borderRadius: 6,
-                        fontWeight: 700,
-                        fontSize: 14,
+                        padding: "8px 12px", borderRadius: 6, fontWeight: 700, fontSize: 14,
                         background: scanMsg.tone === "success" ? "#d4f57a" :
                                     scanMsg.tone === "critical" ? "#ffb3b3" : "#fff176",
                         color: scanMsg.tone === "success" ? "#2d4a00" :
@@ -551,7 +558,6 @@ export default function PackCheck() {
                     />
                   )}
 
-                  {/* Shipping breakdown per order */}
                   {selectedOrders.length > 0 && (
                     <BlockStack gap="200">
                       <InlineStack gap="200" wrap>
@@ -582,17 +588,11 @@ export default function PackCheck() {
                                 ${o.shippingOriginalAmount.toFixed(2)}
                               </span>
                             )}
-                            <span style={{
-                              fontWeight: 700, fontSize: 14,
-                              color: o.shippingAmount === 0 ? "#d72c0d" : "#008060",
-                            }}>
+                            <span style={{ fontWeight: 700, fontSize: 14, color: o.shippingAmount === 0 ? "#d72c0d" : "#008060" }}>
                               ${o.shippingAmount.toFixed(2)}
                             </span>
                             {o.discountCodes.length > 0 && (
-                              <span style={{
-                                background: "#f0c040", color: "#856404",
-                                fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
-                              }}>
+                              <span style={{ background: "#f0c040", color: "#856404", fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3 }}>
                                 {o.discountCodes.join(", ")}
                               </span>
                             )}
