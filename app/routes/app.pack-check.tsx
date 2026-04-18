@@ -230,7 +230,11 @@ export default function PackCheck() {
 
     const sorted = [...map.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     setPackItems(sorted);
-    setTimeout(() => scanRef.current?.focus(), 150);
+    // Force blur any focused element then focus scan box
+    setTimeout(() => {
+      (document.activeElement as HTMLElement)?.blur();
+      scanRef.current?.focus();
+    }, 200);
   }
 
   const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
