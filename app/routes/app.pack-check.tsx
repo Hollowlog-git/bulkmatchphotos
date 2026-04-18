@@ -99,6 +99,20 @@ export default function PackCheck() {
     setTimeout(() => scanRef.current?.focus(), 300);
   }, [packItems.length]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if already in an input, button, or select
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON") return;
+      // Ignore modifier keys, function keys, etc
+      if (e.key.length > 1 && e.key !== "Backspace") return;
+      // Route to scan input
+      scanRef.current?.focus();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   const fetchOrders = useCallback(async () => {
     setLoadingOrders(true);
     try {
@@ -474,11 +488,39 @@ export default function PackCheck() {
                     {nextItem.title}
                     {nextItem.variantTitle && nextItem.variantTitle !== "Default Title" ? ` · ${nextItem.variantTitle}` : ""}
                   </div>
+                  {/jap/i.test(nextItem.title) && (
+                    <div style={{ marginBottom: 8 }}>
+                      <span style={{
+                        background: "#dc2626",
+                        color: "#fff",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        padding: "2px 8px",
+                        borderRadius: 4,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                      }}>🇯🇵 Japanese</span>
+                    </div>
+                  )}
                   <InlineStack gap="300" blockAlign="center">
-                    <div style={{ fontSize: 13, color: "#888" }}>
+                    <div style={{ fontSize: 13, color: "#888", marginBottom: scanMsg.text ? 8 : 0 }}>
                       {nextItem.scanned}/{nextItem.quantity} packed
                       {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
                     </div>
+                    {scanMsg.text && (
+                      <div style={{
+                        padding: "8px 12px",
+                        borderRadius: 6,
+                        fontWeight: 700,
+                        fontSize: 14,
+                        background: scanMsg.tone === "success" ? "#d4f57a" :
+                                    scanMsg.tone === "critical" ? "#ffb3b3" : "#fff176",
+                        color: scanMsg.tone === "success" ? "#2d4a00" :
+                               scanMsg.tone === "critical" ? "#5c0000" : "#4a3800",
+                      }}>
+                        {scanMsg.text}
+                      </div>
+                    )}
                     <Button variant="primary" onClick={() => markPacked(nextItem)}>
                       ✓ Mark as packed
                     </Button>
