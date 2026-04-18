@@ -19,7 +19,6 @@ import {
   Spinner,
 } from "@shopify/polaris";
 
-// ── TYPES ──────────────────────────────────────────────────────────────────
 interface LineItem {
   id: string;
   title: string;
@@ -47,7 +46,6 @@ interface PackItem extends LineItem {
   orderNames: string[];
 }
 
-// ── PREFIX COLOUR SYSTEM ───────────────────────────────────────────────────
 const PALETTE = [
   { bg: "#d4f57a", text: "#2d4a00" },
   { bg: "#ffb3b3", text: "#5c0000" },
@@ -78,11 +76,11 @@ function skuSortKey(sku: string): string {
   return m[1] + m[2].padStart(6, "0");
 }
 
-// ── COMPONENT ─────────────────────────────────────────────────────────────
 export default function PackCheck() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [selectValue, setSelectValue] = useState("");
   const [packItems, setPackItems] = useState<PackItem[]>([]);
   const [scanValue, setScanValue] = useState("");
   const [scanMsg, setScanMsg] = useState<{ text: string; tone: "success" | "critical" | "warning" | "" }>({ text: "", tone: "" });
@@ -96,7 +94,6 @@ export default function PackCheck() {
     setTimeout(() => scanRef.current?.focus(), 300);
   }, [packItems.length]);
 
-  // ── LOAD ORDERS ──────────────────────────────────────────────────────────
   const fetchOrders = useCallback(async () => {
     setLoadingOrders(true);
     try {
@@ -112,7 +109,7 @@ export default function PackCheck() {
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
 
-  // ── GROUP OPTIONS — one entry per customer, auto-merged ───────────────────
+  // ── GROUP OPTIONS — customer name first, no long order number lists ────────
   const groupedOptions = () => {
     const groups = new Map<string, Order[]>();
     for (const order of orders) {
@@ -132,13 +129,14 @@ export default function PackCheck() {
     });
 
     for (const [customer, customerOrders] of sorted) {
-      const allIds = customerOrders.map(o => o.id).join(",");
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
-      const orderNames = customerOrders.map(o => o.name).join(", ");
-      const mergeNote = customerOrders.length > 1 ? ` — ${customerOrders.length} orders merged` : "";
+      const orderCount = customerOrders.length;
+      const orderLabel = orderCount > 1
+        ? `${orderCount} orders`
+        : customerOrders[0].name;
       options.push({
-        label: `${orderNames} · ${customer} · ${totalLines} line${totalLines !== 1 ? "s" : ""}${mergeNote}`,
-        value: `MERGE:${allIds}`,
+        label: `${customer} — ${orderLabel} · ${totalLines} item${totalLines !== 1 ? "s" : ""}`,
+        value: customer, // use customer name as key, not long ID list
       });
     }
 
@@ -147,6 +145,7 @@ export default function PackCheck() {
 
   // ── SELECT ORDER ─────────────────────────────────────────────────────────
   function selectOrder(value: string) {
+    setSelectValue(value);
     setHistory([]);
     setScanMsg({ text: "", tone: "" });
     setShowComplete(false);
@@ -158,16 +157,16 @@ export default function PackCheck() {
       return;
     }
 
-    const orderIds = value.replace("MERGE:", "").split(",");
+    // Find all orders for this customer
+    const customerOrders = orders.filter(o => o.customer === value);
+    const orderIds = customerOrders.map(o => o.id);
     setSelectedOrderIds(orderIds);
 
-    const selectedOrders = orders.filter(o => orderIds.includes(o.id));
     const map = new Map<string, PackItem>();
-
-    for (const order of selectedOrders) {
+    for (const order of customerOrders) {
       for (const item of order.lineItems) {
         const sku = normaliseSku(item.sku || "");
-        const key = sku || item.title;
+        const key = sku || item.id; // use item ID as key when no SKU
         if (map.has(key)) {
           map.get(key)!.quantity += item.quantity;
           if (!map.get(key)!.orderNames.includes(order.name)) {
@@ -178,13 +177,14 @@ export default function PackCheck() {
             ...item,
             sku,
             scanned: 0,
-            sortKey: skuSortKey(sku),
+            sortKey: sku ? skuSortKey(sku) : `ZZZ_${item.title}`,
             orderNames: [order.name],
           });
         }
       }
     }
 
+    // SKU items sorted by SKU, no-SKU items at the end sorted by title
     const sorted = [...map.values()].sort((a, b) =>
       a.sortKey.localeCompare(b.sortKey)
     );
@@ -196,7 +196,7 @@ export default function PackCheck() {
   const totalShipping = selectedOrders.reduce((s, o) => s + o.shippingAmount, 0);
   const shippingWarning = selectedOrders.length > 0 && totalShipping === 0;
 
-  // ── SCAN — auto-confirm after 300ms of no typing ──────────────────────────
+  // ── SCAN — auto-confirm after 300ms ──────────────────────────────────────
   function handleScanChange(value: string) {
     setScanValue(value);
     if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
@@ -219,8 +219,11 @@ export default function PackCheck() {
       return;
     }
 
+    // Match by SKU first, then by title (for no-SKU items)
     const idx = packItems.findIndex(i =>
-      i.sku === sku || i.sku === raw.toUpperCase() || i.title.toLowerCase() === raw.toLowerCase()
+      (i.sku && (i.sku === sku || i.sku === raw.toUpperCase())) ||
+      (!i.sku && i.title.toLowerCase() === raw.toLowerCase()) ||
+      i.title.toLowerCase() === raw.toLowerCase()
     );
 
     if (idx === -1) {
@@ -233,33 +236,33 @@ export default function PackCheck() {
       updated[idx] = { ...updated[idx], scanned: updated[idx].scanned + 1 };
       const item = updated[idx];
       if (item.scanned > item.quantity) {
-        setScanMsg({ text: `⚠️ ${sku} — OVER-SCANNED (${item.scanned}/${item.quantity})`, tone: "critical" });
+        setScanMsg({ text: `⚠️ ${item.sku || item.title} — OVER-SCANNED (${item.scanned}/${item.quantity})`, tone: "critical" });
       } else if (item.scanned === item.quantity) {
-        setScanMsg({ text: `✓ ${sku} complete (${item.scanned}/${item.quantity})`, tone: "success" });
+        setScanMsg({ text: `✓ ${item.sku || item.title} complete (${item.scanned}/${item.quantity})`, tone: "success" });
         const allDone = updated.every(i => i.scanned === i.quantity);
         if (allDone) setTimeout(() => setShowComplete(true), 400);
       } else {
-        setScanMsg({ text: `✓ ${sku} (${item.scanned}/${item.quantity})`, tone: "success" });
+        setScanMsg({ text: `✓ ${item.sku || item.title} (${item.scanned}/${item.quantity})`, tone: "success" });
       }
       return updated;
     });
 
-    setHistory(h => [...h, sku]);
+    setHistory(h => [...h, item.sku || item.title]);
     setTimeout(() => scanRef.current?.focus(), 50);
   }
 
   function undoLast() {
     if (!history.length) return;
-    const lastSku = history[history.length - 1];
+    const lastKey = history[history.length - 1];
     setHistory(h => h.slice(0, -1));
     setPackItems(prev => {
-      const idx = prev.findIndex(i => i.sku === lastSku);
+      const idx = prev.findIndex(i => (i.sku || i.title) === lastKey);
       if (idx === -1) return prev;
       const updated = [...prev];
       updated[idx] = { ...updated[idx], scanned: Math.max(0, updated[idx].scanned - 1) };
       return updated;
     });
-    setScanMsg({ text: `↩ Undid: ${lastSku}`, tone: "warning" });
+    setScanMsg({ text: `↩ Undid: ${lastKey}`, tone: "warning" });
     setShowComplete(false);
   }
 
@@ -270,7 +273,6 @@ export default function PackCheck() {
     setShowComplete(false);
   }
 
-  // ── PROGRESS ─────────────────────────────────────────────────────────────
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
   const progressPct = totalQty ? Math.round((scannedQty / totalQty) * 100) : 0;
@@ -283,16 +285,37 @@ export default function PackCheck() {
     return true;
   });
 
-  // Next item to scan = first not fully scanned
   const nextItem = packItems.find(i => i.scanned < i.quantity);
+  const colour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
+
+  // Fix: confirmScan needs item reference for history — use item directly
+  function markPacked(item: PackItem) {
+    const key = item.sku || item.title;
+    setPackItems(prev => {
+      const idx = prev.findIndex(i => (i.sku || i.title) === key);
+      if (idx === -1) return prev;
+      const updated = [...prev];
+      updated[idx] = { ...updated[idx], scanned: updated[idx].scanned + 1 };
+      const updatedItem = updated[idx];
+      if (updatedItem.scanned > updatedItem.quantity) {
+        setScanMsg({ text: `⚠️ ${key} — OVER-SCANNED`, tone: "critical" });
+      } else if (updatedItem.scanned === updatedItem.quantity) {
+        setScanMsg({ text: `✓ ${key} complete`, tone: "success" });
+        const allDone = updated.every(i => i.scanned === i.quantity);
+        if (allDone) setTimeout(() => setShowComplete(true), 400);
+      } else {
+        setScanMsg({ text: `✓ ${key} (${updatedItem.scanned}/${updatedItem.quantity})`, tone: "success" });
+      }
+      return updated;
+    });
+    setHistory(h => [...h, key]);
+  }
 
   return (
     <Page
       title="Pack Check"
       subtitle="Scan or enter SKUs to confirm packing"
-      primaryAction={
-        <Button onClick={fetchOrders} loading={loadingOrders}>Refresh Orders</Button>
-      }
+      primaryAction={<Button onClick={fetchOrders} loading={loadingOrders}>Refresh Orders</Button>}
     >
       <Layout>
 
@@ -300,10 +323,7 @@ export default function PackCheck() {
         {shippingWarning && (
           <Layout.Section>
             <Banner title="⚠️ No shipping paid on this order!" tone="critical">
-              <p>
-                Total shipping across {selectedOrders.length > 1 ? `all ${selectedOrders.length} orders` : "this order"} is $0.00.
-                Check that the customer has selected a paid shipping option before packing.
-              </p>
+              <p>Total shipping is $0.00 across {selectedOrders.length > 1 ? `all ${selectedOrders.length} orders` : "this order"}. Check the customer selected a paid shipping option.</p>
               <div style={{ marginTop: 8 }}>
                 {selectedOrders.map(o => (
                   <div key={o.id} style={{ fontSize: 13, color: "#d72c0d", fontWeight: 600 }}>
@@ -337,44 +357,47 @@ export default function PackCheck() {
             <Card>
               <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 0" }}>
                 {nextItem.imageUrl ? (
-                  <img
-                    src={nextItem.imageUrl}
-                    alt={nextItem.title}
-                    style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, flexShrink: 0 }}
-                  />
+                  <img src={nextItem.imageUrl} alt={nextItem.title}
+                    style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />
                 ) : (
                   <div style={{
                     width: 120, height: 120, borderRadius: 8, flexShrink: 0,
-                    background: getPrefixColour(nextItem.sku).bg,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 28, fontWeight: 700, color: getPrefixColour(nextItem.sku).text,
+                    background: colour.bg, display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: 28, fontWeight: 700, color: colour.text,
                   }}>
-                    {nextItem.sku.substring(0, 2)}
+                    {nextItem.sku ? nextItem.sku.substring(0, 2) : "?"}
                   </div>
                 )}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Next to pack</div>
-                  <div style={{
-                    display: "inline-block",
-                    background: getPrefixColour(nextItem.sku).bg,
-                    color: getPrefixColour(nextItem.sku).text,
-                    fontFamily: "monospace",
-                    fontWeight: 700,
-                    fontSize: 28,
-                    padding: "4px 14px",
-                    borderRadius: 6,
-                    marginBottom: 8,
-                  }}>
-                    {nextItem.sku || "—"}
-                  </div>
-                  <div style={{ fontSize: 15, color: "#333", marginBottom: 4 }}>
+                  {nextItem.sku ? (
+                    <div style={{
+                      display: "inline-block", background: colour.bg, color: colour.text,
+                      fontFamily: "monospace", fontWeight: 700, fontSize: 28,
+                      padding: "4px 14px", borderRadius: 6, marginBottom: 8,
+                    }}>
+                      {nextItem.sku}
+                    </div>
+                  ) : (
+                    <div style={{ marginBottom: 8 }}>
+                      <Badge tone="warning">No SKU — manual item</Badge>
+                    </div>
+                  )}
+                  <div style={{ fontSize: 15, color: "#333", marginBottom: 8 }}>
                     {nextItem.title}
                     {nextItem.variantTitle && nextItem.variantTitle !== "Default Title" ? ` · ${nextItem.variantTitle}` : ""}
                   </div>
-                  <div style={{ fontSize: 13, color: "#888" }}>
-                    {nextItem.scanned}/{nextItem.quantity} packed
-                    {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
-                  </div>
+                  <InlineStack gap="300" blockAlign="center">
+                    <div style={{ fontSize: 13, color: "#888" }}>
+                      {nextItem.scanned}/{nextItem.quantity} packed
+                      {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
+                    </div>
+                    {!nextItem.sku && (
+                      <Button variant="primary" onClick={() => markPacked(nextItem)}>
+                        ✓ Mark as packed
+                      </Button>
+                    )}
+                  </InlineStack>
                 </div>
               </div>
             </Card>
@@ -383,12 +406,10 @@ export default function PackCheck() {
 
         {/* ── TWO COLUMN LAYOUT ── */}
         <Layout.Section>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
 
             {/* LEFT COLUMN */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-              {/* Order selector */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
               <Card>
                 <BlockStack gap="400">
                   <Text variant="headingMd" as="h2">Select Customer / Order</Text>
@@ -398,16 +419,13 @@ export default function PackCheck() {
                     <Select
                       label="Unfulfilled orders — grouped by customer"
                       options={groupedOptions()}
-                      value={selectedOrderIds.length > 0 ? `MERGE:${selectedOrderIds.join(",")}` : ""}
+                      value={selectValue}
                       onChange={selectOrder}
                     />
                   )}
                   {selectedOrders.length > 0 && (
                     <InlineStack gap="200" wrap>
-                      {selectedOrders.map(o => (
-                        <Badge key={o.id} tone="info">{o.name}</Badge>
-                      ))}
-                      <Badge>{selectedOrders[0].customer}</Badge>
+                      <Badge tone="info">{selectedOrders[0].customer}</Badge>
                       <Badge>{totalQty} item{totalQty !== 1 ? "s" : ""}</Badge>
                       {selectedOrders.length > 1 && (
                         <Badge tone="attention">{selectedOrders.length} orders merged</Badge>
@@ -417,33 +435,26 @@ export default function PackCheck() {
                 </BlockStack>
               </Card>
 
-              {/* Scan input */}
               {packItems.length > 0 && (
                 <Card>
                   <BlockStack gap="300">
                     <Text variant="headingMd" as="h2">Scan / Enter SKU</Text>
                     <TextField
-                      label=""
-                      labelHidden
+                      label="" labelHidden
                       value={scanValue}
                       onChange={handleScanChange}
                       onKeyDown={e => e.key === "Enter" && confirmScan()}
                       placeholder="Scan barcode or type SKU…"
-                      autoComplete="off"
-                      autoCorrect="off"
-                      spellCheck={false}
-                      ref={scanRef}
-                      size="large"
+                      autoComplete="off" autoCorrect="off" spellCheck={false}
+                      ref={scanRef} size="large"
                     />
                     {scanMsg.text && (
                       <Box
                         background={
                           scanMsg.tone === "success" ? "bg-fill-success" :
-                          scanMsg.tone === "critical" ? "bg-fill-critical" :
-                          "bg-fill-warning"
+                          scanMsg.tone === "critical" ? "bg-fill-critical" : "bg-fill-warning"
                         }
-                        padding="200"
-                        borderRadius="200"
+                        padding="200" borderRadius="200"
                       >
                         <Text variant="bodyMd" as="p" fontWeight="semibold">{scanMsg.text}</Text>
                       </Box>
@@ -451,14 +462,11 @@ export default function PackCheck() {
                   </BlockStack>
                 </Card>
               )}
-
             </div>
 
             {/* RIGHT COLUMN */}
             {packItems.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-                {/* Progress */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
                 <Card>
                   <BlockStack gap="200">
                     <InlineStack align="space-between">
@@ -473,7 +481,6 @@ export default function PackCheck() {
                   </BlockStack>
                 </Card>
 
-                {/* Pick list */}
                 <Card>
                   <BlockStack gap="400">
                     <InlineStack align="space-between" blockAlign="center">
@@ -499,53 +506,53 @@ export default function PackCheck() {
                           const done = item.scanned >= item.quantity;
                           const over = item.scanned > item.quantity;
                           const partial = item.scanned > 0 && item.scanned < item.quantity;
-                          const colour = getPrefixColour(item.sku);
+                          const c = getPrefixColour(item.sku);
                           const isNext = item === nextItem;
 
                           return (
                             <div
                               key={item.id}
-                              onClick={() => { setScanValue(item.sku); scanRef.current?.focus(); }}
+                              onClick={() => {
+                                if (item.sku) { setScanValue(item.sku); scanRef.current?.focus(); }
+                              }}
                               style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "12px",
-                                padding: "10px 14px",
-                                borderRadius: "8px",
-                                border: `1px solid ${over ? "#d72c0d" : isNext ? colour.bg : done ? "#e3e3e3" : partial ? "#e1a900" : "#e3e3e3"}`,
-                                borderLeft: `5px solid ${colour.bg}`,
-                                background: over ? "#fff4f4" : isNext ? `${colour.bg}22` : done ? "#f8f8f8" : "#ffffff",
-                                cursor: "pointer",
+                                display: "flex", alignItems: "center", gap: "10px",
+                                padding: "10px 12px", borderRadius: "8px",
+                                border: `1px solid ${over ? "#d72c0d" : isNext ? c.bg : done ? "#e3e3e3" : partial ? "#e1a900" : "#e3e3e3"}`,
+                                borderLeft: `5px solid ${c.bg}`,
+                                background: over ? "#fff4f4" : isNext ? `${c.bg}22` : done ? "#f8f8f8" : "#ffffff",
+                                cursor: item.sku ? "pointer" : "default",
                                 opacity: done ? 0.55 : 1,
                                 transition: "all 0.15s",
                               }}
                             >
                               {item.imageUrl ? (
-                                <img
-                                  src={item.imageUrl}
-                                  alt={item.title}
-                                  style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 5, flexShrink: 0, opacity: done ? 0.5 : 1 }}
-                                />
+                                <img src={item.imageUrl} alt={item.title}
+                                  style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 5, flexShrink: 0, opacity: done ? 0.5 : 1 }} />
                               ) : (
                                 <div style={{
-                                  width: 40, height: 40, borderRadius: 5, background: colour.bg, flexShrink: 0,
+                                  width: 40, height: 40, borderRadius: 5, background: c.bg, flexShrink: 0,
                                   display: "flex", alignItems: "center", justifyContent: "center",
-                                  fontSize: 10, fontWeight: 700, color: colour.text,
+                                  fontSize: 10, fontWeight: 700, color: c.text,
                                 }}>
-                                  {item.sku.substring(0, 2)}
+                                  {item.sku ? item.sku.substring(0, 2) : "?"}
                                 </div>
                               )}
 
                               <div style={{ minWidth: 0, flex: 1 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                                  <div style={{
-                                    background: colour.bg, color: colour.text,
-                                    fontFamily: "monospace", fontWeight: 700, fontSize: "13px",
-                                    padding: "2px 7px", borderRadius: "4px", flexShrink: 0,
-                                    textDecoration: done ? "line-through" : "none",
-                                  }}>
-                                    {item.sku || "—"}
-                                  </div>
+                                  {item.sku ? (
+                                    <div style={{
+                                      background: c.bg, color: c.text, fontFamily: "monospace",
+                                      fontWeight: 700, fontSize: "13px", padding: "2px 7px",
+                                      borderRadius: "4px", flexShrink: 0,
+                                      textDecoration: done ? "line-through" : "none",
+                                    }}>
+                                      {item.sku}
+                                    </div>
+                                  ) : (
+                                    <Badge tone="warning" size="small">No SKU</Badge>
+                                  )}
                                   {item.orderNames.length > 1 && (
                                     <span style={{ fontSize: 10, color: "#888" }}>{item.orderNames.join(", ")}</span>
                                   )}
@@ -564,9 +571,15 @@ export default function PackCheck() {
                                 {item.scanned}/{item.quantity}
                               </div>
 
-                              <div style={{ fontSize: "18px", width: "22px", textAlign: "center", flexShrink: 0 }}>
-                                {over ? "⚠️" : done ? "✅" : partial ? "◑" : "○"}
-                              </div>
+                              {!item.sku && !done ? (
+                                <div onClick={e => e.stopPropagation()}>
+                                  <Button size="slim" variant="primary" onClick={() => markPacked(item)}>✓</Button>
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: "18px", width: "22px", textAlign: "center", flexShrink: 0 }}>
+                                  {over ? "⚠️" : done ? "✅" : partial ? "◑" : "○"}
+                                </div>
+                              )}
                             </div>
                           );
                         })
@@ -581,7 +594,6 @@ export default function PackCheck() {
                     </InlineStack>
                   </BlockStack>
                 </Card>
-
               </div>
             )}
           </div>
