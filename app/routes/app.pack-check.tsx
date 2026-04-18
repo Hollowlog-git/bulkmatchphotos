@@ -37,6 +37,11 @@ interface Order {
   customer: string;
   shippingTitle: string;
   shippingAmount: number;
+  shippingOriginalAmount: number;
+  shippingWasFree: boolean;
+  hasShippingDiscount: boolean;
+  currencyCode: string;
+  discountCodes: string[];
   lineItems: LineItem[];
 }
 
@@ -109,7 +114,6 @@ export default function PackCheck() {
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
 
-  // ── GROUP OPTIONS — customer name first, no long order number lists ────────
   const groupedOptions = () => {
     const groups = new Map<string, Order[]>();
     for (const order of orders) {
@@ -131,19 +135,19 @@ export default function PackCheck() {
     for (const [customer, customerOrders] of sorted) {
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
       const orderCount = customerOrders.length;
-      const orderLabel = orderCount > 1
-        ? `${orderCount} orders`
-        : customerOrders[0].name;
+      const orderLabel = orderCount > 1 ? `${orderCount} orders` : customerOrders[0].name;
+      const totalShipping = customerOrders.reduce((s, o) => s + o.shippingAmount, 0);
+      const hasIssue = totalShipping === 0 || customerOrders.some(o => o.hasShippingDiscount || o.discountCodes.length > 0);
+      const issueFlag = hasIssue ? " ⚠️" : "";
       options.push({
-        label: `${customer} — ${orderLabel} · ${totalLines} item${totalLines !== 1 ? "s" : ""}`,
-        value: customer, // use customer name as key, not long ID list
+        label: `${customer} — ${orderLabel} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${issueFlag}`,
+        value: customer,
       });
     }
 
     return options;
   };
 
-  // ── SELECT ORDER ─────────────────────────────────────────────────────────
   function selectOrder(value: string) {
     setSelectValue(value);
     setHistory([]);
@@ -157,7 +161,6 @@ export default function PackCheck() {
       return;
     }
 
-    // Find all orders for this customer
     const customerOrders = orders.filter(o => o.customer === value);
     const orderIds = customerOrders.map(o => o.id);
     setSelectedOrderIds(orderIds);
@@ -166,7 +169,7 @@ export default function PackCheck() {
     for (const order of customerOrders) {
       for (const item of order.lineItems) {
         const sku = normaliseSku(item.sku || "");
-        const key = sku || item.id; // use item ID as key when no SKU
+        const key = sku || item.id;
         if (map.has(key)) {
           map.get(key)!.quantity += item.quantity;
           if (!map.get(key)!.orderNames.includes(order.name)) {
@@ -184,26 +187,24 @@ export default function PackCheck() {
       }
     }
 
-    // SKU items sorted by SKU, no-SKU items at the end sorted by title
-    const sorted = [...map.values()].sort((a, b) =>
-      a.sortKey.localeCompare(b.sortKey)
-    );
+    const sorted = [...map.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     setPackItems(sorted);
   }
 
-  // ── SHIPPING WARNING ──────────────────────────────────────────────────────
   const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
   const totalShipping = selectedOrders.reduce((s, o) => s + o.shippingAmount, 0);
-  const shippingWarning = selectedOrders.length > 0 && totalShipping === 0;
+  const noShippingPaid = selectedOrders.length > 0 && totalShipping === 0;
+  const ordersWithShippingDiscount = selectedOrders.filter(o => o.hasShippingDiscount);
+  const allDiscountCodes = selectedOrders.flatMap(o =>
+    o.discountCodes.map(code => ({ code, orderName: o.name }))
+  );
+  const hasAnyIssue = noShippingPaid || ordersWithShippingDiscount.length > 0 || allDiscountCodes.length > 0;
 
-  // ── SCAN — auto-confirm after 300ms ──────────────────────────────────────
   function handleScanChange(value: string) {
     setScanValue(value);
     if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
     if (value.trim()) {
-      autoConfirmTimer.current = setTimeout(() => {
-        confirmScan(value);
-      }, 300);
+      autoConfirmTimer.current = setTimeout(() => confirmScan(value), 300);
     }
   }
 
@@ -219,10 +220,8 @@ export default function PackCheck() {
       return;
     }
 
-    // Match by SKU first, then by title (for no-SKU items)
     const idx = packItems.findIndex(i =>
       (i.sku && (i.sku === sku || i.sku === raw.toUpperCase())) ||
-      (!i.sku && i.title.toLowerCase() === raw.toLowerCase()) ||
       i.title.toLowerCase() === raw.toLowerCase()
     );
 
@@ -235,20 +234,41 @@ export default function PackCheck() {
       const updated = [...prev];
       updated[idx] = { ...updated[idx], scanned: updated[idx].scanned + 1 };
       const item = updated[idx];
+      const label = item.sku || item.title;
       if (item.scanned > item.quantity) {
-        setScanMsg({ text: `⚠️ ${item.sku || item.title} — OVER-SCANNED (${item.scanned}/${item.quantity})`, tone: "critical" });
+        setScanMsg({ text: `⚠️ ${label} — OVER-SCANNED (${item.scanned}/${item.quantity})`, tone: "critical" });
       } else if (item.scanned === item.quantity) {
-        setScanMsg({ text: `✓ ${item.sku || item.title} complete (${item.scanned}/${item.quantity})`, tone: "success" });
-        const allDone = updated.every(i => i.scanned === i.quantity);
-        if (allDone) setTimeout(() => setShowComplete(true), 400);
+        setScanMsg({ text: `✓ ${label} complete (${item.scanned}/${item.quantity})`, tone: "success" });
+        if (updated.every(i => i.scanned === i.quantity)) setTimeout(() => setShowComplete(true), 400);
       } else {
-        setScanMsg({ text: `✓ ${item.sku || item.title} (${item.scanned}/${item.quantity})`, tone: "success" });
+        setScanMsg({ text: `✓ ${label} (${item.scanned}/${item.quantity})`, tone: "success" });
       }
       return updated;
     });
 
-    setHistory(h => [...h, item.sku || item.title]);
+    setHistory(h => [...h, packItems[idx].sku || packItems[idx].title]);
     setTimeout(() => scanRef.current?.focus(), 50);
+  }
+
+  function markPacked(item: PackItem) {
+    const key = item.sku || item.title;
+    setPackItems(prev => {
+      const idx = prev.findIndex(i => (i.sku || i.title) === key);
+      if (idx === -1) return prev;
+      const updated = [...prev];
+      updated[idx] = { ...updated[idx], scanned: updated[idx].scanned + 1 };
+      const u = updated[idx];
+      if (u.scanned > u.quantity) {
+        setScanMsg({ text: `⚠️ ${key} — OVER-SCANNED`, tone: "critical" });
+      } else if (u.scanned === u.quantity) {
+        setScanMsg({ text: `✓ ${key} complete`, tone: "success" });
+        if (updated.every(i => i.scanned === i.quantity)) setTimeout(() => setShowComplete(true), 400);
+      } else {
+        setScanMsg({ text: `✓ ${key} (${u.scanned}/${u.quantity})`, tone: "success" });
+      }
+      return updated;
+    });
+    setHistory(h => [...h, key]);
   }
 
   function undoLast() {
@@ -277,39 +297,14 @@ export default function PackCheck() {
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
   const progressPct = totalQty ? Math.round((scannedQty / totalQty) * 100) : 0;
   const hasOverScan = packItems.some(i => i.scanned > i.quantity);
-
   const filteredItems = packItems.filter(item => {
     const done = item.scanned >= item.quantity;
     if (filter === "remaining") return !done;
     if (filter === "done") return done;
     return true;
   });
-
   const nextItem = packItems.find(i => i.scanned < i.quantity);
-  const colour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
-
-  // Fix: confirmScan needs item reference for history — use item directly
-  function markPacked(item: PackItem) {
-    const key = item.sku || item.title;
-    setPackItems(prev => {
-      const idx = prev.findIndex(i => (i.sku || i.title) === key);
-      if (idx === -1) return prev;
-      const updated = [...prev];
-      updated[idx] = { ...updated[idx], scanned: updated[idx].scanned + 1 };
-      const updatedItem = updated[idx];
-      if (updatedItem.scanned > updatedItem.quantity) {
-        setScanMsg({ text: `⚠️ ${key} — OVER-SCANNED`, tone: "critical" });
-      } else if (updatedItem.scanned === updatedItem.quantity) {
-        setScanMsg({ text: `✓ ${key} complete`, tone: "success" });
-        const allDone = updated.every(i => i.scanned === i.quantity);
-        if (allDone) setTimeout(() => setShowComplete(true), 400);
-      } else {
-        setScanMsg({ text: `✓ ${key} (${updatedItem.scanned}/${updatedItem.quantity})`, tone: "success" });
-      }
-      return updated;
-    });
-    setHistory(h => [...h, key]);
-  }
+  const nextColour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
 
   return (
     <Page
@@ -319,19 +314,111 @@ export default function PackCheck() {
     >
       <Layout>
 
-        {/* ── SHIPPING WARNING ── */}
-        {shippingWarning && (
+        {/* ── SHIPPING / DISCOUNT WARNINGS ── */}
+        {hasAnyIssue && (
           <Layout.Section>
-            <Banner title="⚠️ No shipping paid on this order!" tone="critical">
-              <p>Total shipping is $0.00 across {selectedOrders.length > 1 ? `all ${selectedOrders.length} orders` : "this order"}. Check the customer selected a paid shipping option.</p>
-              <div style={{ marginTop: 8 }}>
-                {selectedOrders.map(o => (
-                  <div key={o.id} style={{ fontSize: 13, color: "#d72c0d", fontWeight: 600 }}>
-                    {o.name}: {o.shippingTitle} — ${o.shippingAmount.toFixed(2)}
-                  </div>
-                ))}
+            <div style={{
+              background: "#fff0f0",
+              border: "3px solid #d72c0d",
+              borderRadius: 10,
+              padding: "20px 24px",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                <span style={{ fontSize: 28 }}>🚨</span>
+                <Text variant="headingLg" as="h2">
+                  Shipping / Discount Issue — Check Before Packing
+                </Text>
               </div>
-            </Banner>
+
+              {/* No shipping paid */}
+              {noShippingPaid && (
+                <div style={{
+                  background: "#d72c0d",
+                  color: "#fff",
+                  borderRadius: 8,
+                  padding: "12px 16px",
+                  marginBottom: 10,
+                  fontWeight: 700,
+                  fontSize: 15,
+                }}>
+                  ❌ NO SHIPPING PAID — Total shipping across all orders is $0.00
+                </div>
+              )}
+
+              {/* Per-order shipping breakdown */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: allDiscountCodes.length > 0 ? 12 : 0 }}>
+                {selectedOrders.map(o => {
+                  const issueBg = o.shippingAmount === 0 || o.hasShippingDiscount ? "#fff3cd" : "#f0fff4";
+                  const issueText = o.shippingAmount === 0 || o.hasShippingDiscount ? "#856404" : "#008060";
+                  return (
+                    <div key={o.id} style={{
+                      background: issueBg,
+                      border: `1px solid ${o.shippingAmount === 0 || o.hasShippingDiscount ? "#f0c040" : "#c3e6cb"}`,
+                      borderRadius: 6,
+                      padding: "10px 14px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: 8,
+                    }}>
+                      <div>
+                        <span style={{ fontWeight: 700, marginRight: 8, color: "#333" }}>{o.name}</span>
+                        <span style={{ color: "#555" }}>{o.shippingTitle}</span>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        {o.shippingOriginalAmount > 0 && o.shippingAmount === 0 && (
+                          <span style={{ textDecoration: "line-through", color: "#999", fontSize: 13 }}>
+                            ${o.shippingOriginalAmount.toFixed(2)}
+                          </span>
+                        )}
+                        <span style={{ fontWeight: 700, color: issueText, fontSize: 16 }}>
+                          ${o.shippingAmount.toFixed(2)} {o.currencyCode}
+                        </span>
+                        {o.hasShippingDiscount && (
+                          <span style={{
+                            background: "#f0c040", color: "#856404",
+                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+                          }}>DISCOUNT APPLIED</span>
+                        )}
+                        {o.shippingWasFree && !o.hasShippingDiscount && (
+                          <span style={{
+                            background: "#ffc107", color: "#856404",
+                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+                          }}>FREE SHIPPING SELECTED</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Discount codes */}
+              {allDiscountCodes.length > 0 && (
+                <div style={{
+                  background: "#fff3cd",
+                  border: "1px solid #f0c040",
+                  borderRadius: 8,
+                  padding: "12px 16px",
+                }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#856404", marginBottom: 6 }}>
+                    🏷️ Promotional / Discount Codes Used:
+                  </div>
+                  {allDiscountCodes.map((d, i) => (
+                    <div key={i} style={{ fontSize: 14, color: "#856404", marginBottom: 2 }}>
+                      <strong>{d.orderName}:</strong> <code style={{
+                        background: "#fff",
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        border: "1px solid #f0c040",
+                        fontFamily: "monospace",
+                        fontWeight: 700,
+                      }}>{d.code}</code>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </Layout.Section>
         )}
 
@@ -362,8 +449,8 @@ export default function PackCheck() {
                 ) : (
                   <div style={{
                     width: 120, height: 120, borderRadius: 8, flexShrink: 0,
-                    background: colour.bg, display: "flex", alignItems: "center",
-                    justifyContent: "center", fontSize: 28, fontWeight: 700, color: colour.text,
+                    background: nextColour.bg, display: "flex", alignItems: "center",
+                    justifyContent: "center", fontSize: 28, fontWeight: 700, color: nextColour.text,
                   }}>
                     {nextItem.sku ? nextItem.sku.substring(0, 2) : "?"}
                   </div>
@@ -372,7 +459,7 @@ export default function PackCheck() {
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Next to pack</div>
                   {nextItem.sku ? (
                     <div style={{
-                      display: "inline-block", background: colour.bg, color: colour.text,
+                      display: "inline-block", background: nextColour.bg, color: nextColour.text,
                       fontFamily: "monospace", fontWeight: 700, fontSize: 28,
                       padding: "4px 14px", borderRadius: 6, marginBottom: 8,
                     }}>
@@ -392,11 +479,9 @@ export default function PackCheck() {
                       {nextItem.scanned}/{nextItem.quantity} packed
                       {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
                     </div>
-                    {!nextItem.sku && (
-                      <Button variant="primary" onClick={() => markPacked(nextItem)}>
-                        ✓ Mark as packed
-                      </Button>
-                    )}
+                    <Button variant="primary" onClick={() => markPacked(nextItem)}>
+                      ✓ Mark as packed
+                    </Button>
                   </InlineStack>
                 </div>
               </div>
@@ -423,14 +508,68 @@ export default function PackCheck() {
                       onChange={selectOrder}
                     />
                   )}
+
+                  {/* Shipping breakdown per order */}
                   {selectedOrders.length > 0 && (
-                    <InlineStack gap="200" wrap>
-                      <Badge tone="info">{selectedOrders[0].customer}</Badge>
-                      <Badge>{totalQty} item{totalQty !== 1 ? "s" : ""}</Badge>
-                      {selectedOrders.length > 1 && (
-                        <Badge tone="attention">{selectedOrders.length} orders merged</Badge>
-                      )}
-                    </InlineStack>
+                    <BlockStack gap="200">
+                      <InlineStack gap="200" wrap>
+                        <Badge tone="info">{selectedOrders[0].customer}</Badge>
+                        <Badge>{totalQty} item{totalQty !== 1 ? "s" : ""}</Badge>
+                        {selectedOrders.length > 1 && (
+                          <Badge tone="attention">{selectedOrders.length} orders merged</Badge>
+                        )}
+                      </InlineStack>
+
+                      <Divider />
+
+                      <Text variant="bodySm" as="p" tone="subdued">Shipping per order:</Text>
+                      {selectedOrders.map(o => (
+                        <div key={o.id} style={{
+                          display: "flex", justifyContent: "space-between", alignItems: "center",
+                          padding: "6px 10px", borderRadius: 6, flexWrap: "wrap", gap: 6,
+                          background: o.shippingAmount === 0 || o.hasShippingDiscount ? "#fff3cd" : "#f0fff4",
+                          border: `1px solid ${o.shippingAmount === 0 || o.hasShippingDiscount ? "#f0c040" : "#c3e6cb"}`,
+                        }}>
+                          <div style={{ fontSize: 13 }}>
+                            <span style={{ fontWeight: 700, marginRight: 6 }}>{o.name}</span>
+                            <span style={{ color: "#666" }}>{o.shippingTitle}</span>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {o.shippingOriginalAmount > 0 && o.shippingAmount === 0 && (
+                              <span style={{ textDecoration: "line-through", color: "#999", fontSize: 12 }}>
+                                ${o.shippingOriginalAmount.toFixed(2)}
+                              </span>
+                            )}
+                            <span style={{
+                              fontWeight: 700, fontSize: 14,
+                              color: o.shippingAmount === 0 ? "#d72c0d" : "#008060",
+                            }}>
+                              ${o.shippingAmount.toFixed(2)}
+                            </span>
+                            {o.discountCodes.length > 0 && (
+                              <span style={{
+                                background: "#f0c040", color: "#856404",
+                                fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 3,
+                              }}>
+                                {o.discountCodes.join(", ")}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+
+                      <div style={{
+                        display: "flex", justifyContent: "space-between",
+                        padding: "8px 10px", borderRadius: 6,
+                        background: totalShipping === 0 ? "#fff0f0" : "#f0fff4",
+                        fontWeight: 700, fontSize: 14,
+                      }}>
+                        <span>Total shipping</span>
+                        <span style={{ color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
+                          ${totalShipping.toFixed(2)} {selectedOrders[0]?.currencyCode}
+                        </span>
+                      </div>
+                    </BlockStack>
                   )}
                 </BlockStack>
               </Card>
@@ -512,9 +651,7 @@ export default function PackCheck() {
                           return (
                             <div
                               key={item.id}
-                              onClick={() => {
-                                if (item.sku) { setScanValue(item.sku); scanRef.current?.focus(); }
-                              }}
+                              onClick={() => { if (item.sku) { setScanValue(item.sku); scanRef.current?.focus(); } }}
                               style={{
                                 display: "flex", alignItems: "center", gap: "10px",
                                 padding: "10px 12px", borderRadius: "8px",
@@ -571,13 +708,13 @@ export default function PackCheck() {
                                 {item.scanned}/{item.quantity}
                               </div>
 
-                              {!item.sku && !done ? (
+                              {!done ? (
                                 <div onClick={e => e.stopPropagation()}>
                                   <Button size="slim" variant="primary" onClick={() => markPacked(item)}>✓</Button>
                                 </div>
                               ) : (
                                 <div style={{ fontSize: "18px", width: "22px", textAlign: "center", flexShrink: 0 }}>
-                                  {over ? "⚠️" : done ? "✅" : partial ? "◑" : "○"}
+                                  {over ? "⚠️" : "✅"}
                                 </div>
                               )}
                             </div>
@@ -606,7 +743,7 @@ export default function PackCheck() {
                 heading="Select a customer to start packing"
                 image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
               >
-                <p>Orders are grouped by customer. Multiple orders from the same customer are automatically merged into one pick list.</p>
+                <p>Orders are grouped by customer. Multiple orders are automatically merged. Shipping issues and discount codes are flagged prominently.</p>
               </EmptyState>
             </Card>
           </Layout.Section>

@@ -28,6 +28,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 originalPriceSet {
                   shopMoney {
                     amount
+                    currencyCode
+                  }
+                }
+                discountedPriceSet {
+                  shopMoney {
+                    amount
+                  }
+                }
+              }
+              discountCodes {
+                code
+                amount
+                type
+              }
+              discountApplications(first: 10) {
+                edges {
+                  node {
+                    ... on DiscountCodeApplication {
+                      code
+                      applicable
+                      allocationMethod
+                      targetSelection
+                      targetType
+                      value {
+                        ... on PricingPercentageValue {
+                          percentage
+                        }
+                        ... on MoneyV2 {
+                          amount
+                          currencyCode
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -67,9 +100,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .filter((edge: any) => !edge.node.cancelledAt)
       .map((edge: any) => {
         const o = edge.node;
-        const shippingAmount = parseFloat(
+        const shippingOriginal = parseFloat(
           o.shippingLine?.originalPriceSet?.shopMoney?.amount ?? "0"
         );
+        const shippingDiscounted = parseFloat(
+          o.shippingLine?.discountedPriceSet?.shopMoney?.amount ?? "0"
+        );
+        const currencyCode = o.shippingLine?.originalPriceSet?.shopMoney?.currencyCode ?? "NZD";
+
+        // Extract discount codes
+        const discountCodes = (o.discountCodes ?? []).map((d: any) => d.code);
+
+        // Check if any discount application targets shipping
+        const shippingDiscounts = (o.discountApplications?.edges ?? [])
+          .map((e: any) => e.node)
+          .filter((d: any) => d.targetType === "SHIPPING_LINE" || d.targetSelection === "ALL");
+
+        const hasShippingDiscount = shippingDiscounts.length > 0 || (shippingOriginal > 0 && shippingDiscounted === 0);
+        const shippingWasFree = shippingOriginal === 0;
+
         return {
           id: o.id,
           name: o.name,
@@ -77,8 +126,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           status: o.displayFulfillmentStatus,
           customerId: o.customer?.id ?? null,
           customer: o.customer?.displayName ?? "Guest",
-          shippingTitle: o.shippingLine?.title ?? "No shipping",
-          shippingAmount,
+          shippingTitle: o.shippingLine?.title ?? "No shipping selected",
+          shippingAmount: shippingDiscounted,
+          shippingOriginalAmount: shippingOriginal,
+          shippingWasFree,
+          hasShippingDiscount,
+          currencyCode,
+          discountCodes,
           lineItems: o.lineItems.edges.map((le: any) => ({
             id: le.node.id,
             title: le.node.title,
