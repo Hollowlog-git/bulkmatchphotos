@@ -2,33 +2,27 @@ import type { LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  try {
+    const { admin } = await authenticate.admin(request);
 
-  const response = await admin.graphql(`
-    #graphql
-    query getUnfulfilledOrders {
-      orders(
-        first: 50,
-        query: "fulfillment_status:unfulfilled"
-      ) {
-        edges {
-          node {
-            id
-            name
-            createdAt
-            displayFulfillmentStatus
-            customer {
-              displayName
-            }
-            lineItems(first: 50) {
-              edges {
-                node {
-                  id
-                  title
-                  quantity
-                  variant {
-                    sku
+    const response = await admin.graphql(`
+      #graphql
+      query {
+        orders(first: 50, query: "fulfillment_status:unfulfilled") {
+          edges {
+            node {
+              id
+              name
+              createdAt
+              displayFulfillmentStatus
+              customer { displayName }
+              lineItems(first: 50) {
+                edges {
+                  node {
+                    id
                     title
+                    quantity
+                    variant { sku title }
                   }
                 }
               }
@@ -36,26 +30,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           }
         }
       }
+    `);
+
+    const data = await response.json();
+
+    if (!data?.data?.orders) {
+      console.error("No orders in response:", JSON.stringify(data, null, 2));
+      return Response.json({ orders: [] });
     }
-  `);
 
-  const data = await response.json();
-
-  if (data.errors || !data.data) {
-    const detail = JSON.stringify(data?.errors?.graphQLErrors ?? data?.errors ?? data, null, 2);
-    console.error("PACK_CHECK_ERROR:", detail);
-    return Response.json({ orders: [], error: detail }, { status: 200 });
-  }
-
-  const orders = data.data.orders.edges.map((edge: any) => {
-    const o = edge.node;
-    return {
-      id: o.id,
-      name: o.name,
-      createdAt: o.createdAt,
-      status: o.displayFulfillmentStatus,
-      customer: o.customer?.displayName ?? "Guest",
-      lineItems: o.lineItems.edges.map((le: any) => ({
+    const orders = data.data.orders.edges.map((edge: any) => ({
+      id: edge.node.id,
+      name: edge.node.name,
+      createdAt: edge.node.createdAt,
+      status: edge.node.displayFulfillmentStatus,
+      customer: edge.node.customer?.displayName ?? "Guest",
+      lineItems: edge.node.lineItems.edges.map((le: any) => ({
         id: le.node.id,
         title: le.node.title,
         quantity: le.node.quantity,
@@ -63,8 +53,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         variantTitle: le.node.variant?.title,
         imageUrl: null,
       })),
-    };
-  });
+    }));
 
-  return Response.json({ orders });
+    return Response.json({ orders });
+
+  } catch (error) {
+    console.error("api/orders error:", error);
+    throw error;
+  }
 };
