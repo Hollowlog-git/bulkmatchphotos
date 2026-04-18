@@ -9,9 +9,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     query getUnfulfilledOrders {
       orders(
         first: 50,
-        query: "fulfillment_status:unfulfilled OR fulfillment_status:partial",
-        sortKey: CREATED_AT,
-        reverse: true
+        query: "fulfillment_status:unfulfilled"
       ) {
         edges {
           node {
@@ -28,15 +26,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                   id
                   title
                   quantity
-                  sku
                   variant {
-                    id
-                    title
                     sku
-                  }
-                  image {
-                    url
-                    altText
+                    title
+                    image {
+                      url
+                    }
                   }
                 }
               }
@@ -48,6 +43,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   `);
 
   const data = await response.json();
+
+  if (data.errors || !data.data) {
+    console.error("GraphQL errors:", JSON.stringify(data.errors ?? data, null, 2));
+    return Response.json({ orders: [], error: "GraphQL error" }, { status: 200 });
+  }
 
   const orders = data.data.orders.edges.map((edge: any) => {
     const o = edge.node;
@@ -61,9 +61,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         id: le.node.id,
         title: le.node.title,
         quantity: le.node.quantity,
-        sku: le.node.variant?.sku || le.node.sku || "",
+        sku: le.node.variant?.sku ?? "",
         variantTitle: le.node.variant?.title,
-        imageUrl: le.node.image?.url,
+        imageUrl: le.node.variant?.image?.url,
       })),
     };
   });
