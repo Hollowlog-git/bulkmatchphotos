@@ -2,7 +2,7 @@
 
 client_id = "ef29bf4012f849ed9a0d636457b0677b"
 name = "bulkmatchphotos"
-application_url = "https://bulk-photo-match.fly.dev"
+application_url = "https://bulk-photo-match2.fly.dev"
 embedded = true
 
 [build]
@@ -25,7 +25,7 @@ scopes = "write_products,read_orders"
 
 [auth]
 redirect_urls = [
-  "https://bulk-photo-match.fly.dev/auth/callback",
-  "https://bulk-photo-match.fly.dev/auth/shopify/callback",
-  "https://bulk-photo-match.fly.dev/api/auth/callback"
+  "https://bulk-photo-match2.fly.dev/auth/callback",
+  "https://bulk-photo-match2.fly.dev/auth/shopify/callback",
+  "https://bulk-photo-match2.fly.dev/api/auth/callback"
 ]
