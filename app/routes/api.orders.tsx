@@ -23,6 +23,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 id
                 displayName
               }
+              shippingLine {
+                title
+                originalPriceSet {
+                  shopMoney {
+                    amount
+                  }
+                }
+              }
               lineItems(first: 50) {
                 edges {
                   node {
@@ -59,6 +67,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .filter((edge: any) => !edge.node.cancelledAt)
       .map((edge: any) => {
         const o = edge.node;
+        const shippingAmount = parseFloat(
+          o.shippingLine?.originalPriceSet?.shopMoney?.amount ?? "0"
+        );
         return {
           id: o.id,
           name: o.name,
@@ -66,6 +77,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           status: o.displayFulfillmentStatus,
           customerId: o.customer?.id ?? null,
           customer: o.customer?.displayName ?? "Guest",
+          shippingTitle: o.shippingLine?.title ?? "No shipping",
+          shippingAmount,
           lineItems: o.lineItems.edges.map((le: any) => ({
             id: le.node.id,
             title: le.node.title,

@@ -36,6 +36,8 @@ interface Order {
   status: string;
   customerId: string | null;
   customer: string;
+  shippingTitle: string;
+  shippingAmount: number;
   lineItems: LineItem[];
 }
 
@@ -88,6 +90,7 @@ export default function PackCheck() {
   const [history, setHistory] = useState<string[]>([]);
   const [showComplete, setShowComplete] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
+  const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setTimeout(() => scanRef.current?.focus(), 300);
@@ -188,9 +191,25 @@ export default function PackCheck() {
     setPackItems(sorted);
   }
 
-  // ── SCAN ─────────────────────────────────────────────────────────────────
-  function confirmScan() {
-    const raw = scanValue.trim();
+  // ── SHIPPING WARNING ──────────────────────────────────────────────────────
+  const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
+  const totalShipping = selectedOrders.reduce((s, o) => s + o.shippingAmount, 0);
+  const shippingWarning = selectedOrders.length > 0 && totalShipping === 0;
+
+  // ── SCAN — auto-confirm after 300ms of no typing ──────────────────────────
+  function handleScanChange(value: string) {
+    setScanValue(value);
+    if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
+    if (value.trim()) {
+      autoConfirmTimer.current = setTimeout(() => {
+        confirmScan(value);
+      }, 300);
+    }
+  }
+
+  function confirmScan(rawOverride?: string) {
+    if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
+    const raw = (rawOverride ?? scanValue).trim();
     if (!raw) return;
     const sku = normaliseSku(raw);
     setScanValue("");
@@ -226,6 +245,7 @@ export default function PackCheck() {
     });
 
     setHistory(h => [...h, sku]);
+    setTimeout(() => scanRef.current?.focus(), 50);
   }
 
   function undoLast() {
@@ -263,7 +283,8 @@ export default function PackCheck() {
     return true;
   });
 
-  const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
+  // Next item to scan = first not fully scanned
+  const nextItem = packItems.find(i => i.scanned < i.quantity);
 
   return (
     <Page
@@ -275,259 +296,296 @@ export default function PackCheck() {
     >
       <Layout>
 
-        {/* ── ORDER SELECTOR ── */}
-        <Layout.Section>
-          <Card>
-            <BlockStack gap="400">
-              <Text variant="headingMd" as="h2">Select Customer / Order</Text>
-              {loadingOrders ? (
-                <InlineStack align="center"><Spinner size="small" /></InlineStack>
-              ) : (
-                <Select
-                  label="Unfulfilled orders — grouped by customer"
-                  options={groupedOptions()}
-                  value={selectedOrderIds.length > 0 ? `MERGE:${selectedOrderIds.join(",")}` : ""}
-                  onChange={selectOrder}
-                />
-              )}
-              {selectedOrders.length > 0 && (
-                <InlineStack gap="200" wrap>
-                  {selectedOrders.map(o => (
-                    <Badge key={o.id} tone="info">{o.name}</Badge>
-                  ))}
-                  <Badge>{selectedOrders[0].customer}</Badge>
-                  <Badge>{totalQty} item{totalQty !== 1 ? "s" : ""}</Badge>
-                  {selectedOrders.length > 1 && (
-                    <Badge tone="attention">{selectedOrders.length} orders merged</Badge>
-                  )}
-                </InlineStack>
-              )}
-            </BlockStack>
-          </Card>
-        </Layout.Section>
+        {/* ── SHIPPING WARNING ── */}
+        {shippingWarning && (
+          <Layout.Section>
+            <Banner title="⚠️ No shipping paid on this order!" tone="critical">
+              <p>
+                Total shipping across {selectedOrders.length > 1 ? `all ${selectedOrders.length} orders` : "this order"} is $0.00.
+                Check that the customer has selected a paid shipping option before packing.
+              </p>
+              <div style={{ marginTop: 8 }}>
+                {selectedOrders.map(o => (
+                  <div key={o.id} style={{ fontSize: 13, color: "#d72c0d", fontWeight: 600 }}>
+                    {o.name}: {o.shippingTitle} — ${o.shippingAmount.toFixed(2)}
+                  </div>
+                ))}
+              </div>
+            </Banner>
+          </Layout.Section>
+        )}
 
-        {packItems.length > 0 && (
-          <>
-            {showComplete && (
-              <Layout.Section>
-                <Banner title="✅ All items packed!" tone="success" onDismiss={() => setShowComplete(false)}>
-                  <p>{packItems.length} SKUs · {totalQty} items — all confirmed. Ready to ship.</p>
-                </Banner>
-              </Layout.Section>
-            )}
+        {showComplete && (
+          <Layout.Section>
+            <Banner title="✅ All items packed!" tone="success" onDismiss={() => setShowComplete(false)}>
+              <p>{packItems.length} SKUs · {totalQty} items — all confirmed. Ready to ship.</p>
+            </Banner>
+          </Layout.Section>
+        )}
 
-            {hasOverScan && (
-              <Layout.Section>
-                <Banner title="Over-scan detected" tone="critical">
-                  <p>One or more items scanned more than ordered.</p>
-                </Banner>
-              </Layout.Section>
-            )}
+        {hasOverScan && (
+          <Layout.Section>
+            <Banner title="Over-scan detected" tone="critical">
+              <p>One or more items scanned more than ordered.</p>
+            </Banner>
+          </Layout.Section>
+        )}
 
-            {/* ── SCAN INPUT ── */}
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="300">
-                  <Text variant="headingMd" as="h2">Scan / Enter SKU</Text>
-                  <InlineStack gap="200" align="start" blockAlign="end">
-                    <div style={{ flex: 1 }}>
-                      <TextField
-                        label=""
-                        labelHidden
-                        value={scanValue}
-                        onChange={setScanValue}
-                        onKeyDown={e => e.key === "Enter" && confirmScan()}
-                        placeholder="Scan barcode or type SKU…"
-                        autoComplete="off"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        ref={scanRef}
-                        size="large"
-                      />
-                    </div>
-                    <Button variant="primary" onClick={confirmScan} size="large">Confirm ✓</Button>
-                  </InlineStack>
-                  {scanMsg.text && (
-                    <Box
-                      background={
-                        scanMsg.tone === "success" ? "bg-fill-success" :
-                        scanMsg.tone === "critical" ? "bg-fill-critical" :
-                        "bg-fill-warning"
-                      }
-                      padding="200"
-                      borderRadius="200"
-                    >
-                      <Text variant="bodyMd" as="p" fontWeight="semibold">{scanMsg.text}</Text>
-                    </Box>
-                  )}
-                </BlockStack>
-              </Card>
-            </Layout.Section>
-
-            {/* ── PROGRESS ── */}
-            <Layout.Section>
-              <Card>
-                <BlockStack gap="200">
-                  <InlineStack align="space-between">
-                    <Text variant="bodyMd" as="p" tone="subdued">{scannedQty} / {totalQty} items confirmed</Text>
-                    <Text variant="bodyMd" as="p" fontWeight="bold">{progressPct}%</Text>
-                  </InlineStack>
-                  <ProgressBar
-                    progress={progressPct}
-                    tone={hasOverScan ? "critical" : progressPct === 100 ? "success" : "highlight"}
-                    size="medium"
+        {/* ── NEXT ITEM HERO ── */}
+        {nextItem && (
+          <Layout.Section>
+            <Card>
+              <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 0" }}>
+                {nextItem.imageUrl ? (
+                  <img
+                    src={nextItem.imageUrl}
+                    alt={nextItem.title}
+                    style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, flexShrink: 0 }}
                   />
-                </BlockStack>
-              </Card>
-            </Layout.Section>
+                ) : (
+                  <div style={{
+                    width: 120, height: 120, borderRadius: 8, flexShrink: 0,
+                    background: getPrefixColour(nextItem.sku).bg,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 28, fontWeight: 700, color: getPrefixColour(nextItem.sku).text,
+                  }}>
+                    {nextItem.sku.substring(0, 2)}
+                  </div>
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: "#888", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Next to pack</div>
+                  <div style={{
+                    display: "inline-block",
+                    background: getPrefixColour(nextItem.sku).bg,
+                    color: getPrefixColour(nextItem.sku).text,
+                    fontFamily: "monospace",
+                    fontWeight: 700,
+                    fontSize: 28,
+                    padding: "4px 14px",
+                    borderRadius: 6,
+                    marginBottom: 8,
+                  }}>
+                    {nextItem.sku || "—"}
+                  </div>
+                  <div style={{ fontSize: 15, color: "#333", marginBottom: 4 }}>
+                    {nextItem.title}
+                    {nextItem.variantTitle && nextItem.variantTitle !== "Default Title" ? ` · ${nextItem.variantTitle}` : ""}
+                  </div>
+                  <div style={{ fontSize: 13, color: "#888" }}>
+                    {nextItem.scanned}/{nextItem.quantity} packed
+                    {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </Layout.Section>
+        )}
 
-            {/* ── PICK LIST ── */}
-            <Layout.Section>
+        {/* ── TWO COLUMN LAYOUT ── */}
+        <Layout.Section>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, alignItems: "start" }}>
+
+            {/* LEFT COLUMN */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+              {/* Order selector */}
               <Card>
                 <BlockStack gap="400">
-                  <InlineStack align="space-between" blockAlign="center">
-                    <Text variant="headingMd" as="h2">Pick List</Text>
-                    <ButtonGroup>
-                      <Button variant={filter === "all" ? "primary" : "secondary"} onClick={() => setFilter("all")} size="slim">All</Button>
-                      <Button variant={filter === "remaining" ? "primary" : "secondary"} onClick={() => setFilter("remaining")} size="slim">Remaining</Button>
-                      <Button variant={filter === "done" ? "primary" : "secondary"} onClick={() => setFilter("done")} size="slim">Done</Button>
-                    </ButtonGroup>
-                  </InlineStack>
-
-                  <Divider />
-
-                  <BlockStack gap="200">
-                    {filteredItems.length === 0 ? (
-                      <Box padding="400">
-                        <Text as="p" tone="subdued" alignment="center">
-                          {filter === "remaining" ? "🎉 All items packed!" : "No items in this view."}
-                        </Text>
-                      </Box>
-                    ) : (
-                      filteredItems.map(item => {
-                        const done = item.scanned >= item.quantity;
-                        const over = item.scanned > item.quantity;
-                        const partial = item.scanned > 0 && item.scanned < item.quantity;
-                        const colour = getPrefixColour(item.sku);
-
-                        return (
-                          <div
-                            key={item.id}
-                            onClick={() => { setScanValue(item.sku); scanRef.current?.focus(); }}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: "12px",
-                              padding: "10px 14px",
-                              borderRadius: "8px",
-                              border: `1px solid ${over ? "#d72c0d" : done ? "#e3e3e3" : partial ? "#e1a900" : "#e3e3e3"}`,
-                              borderLeft: `5px solid ${colour.bg}`,
-                              background: over ? "#fff4f4" : done ? "#f8f8f8" : "#ffffff",
-                              cursor: "pointer",
-                              opacity: done ? 0.65 : 1,
-                              transition: "all 0.15s",
-                            }}
-                          >
-                            {/* Image */}
-                            {item.imageUrl ? (
-                              <img
-                                src={item.imageUrl}
-                                alt={item.title}
-                                style={{
-                                  width: 48,
-                                  height: 48,
-                                  objectFit: "cover",
-                                  borderRadius: 6,
-                                  flexShrink: 0,
-                                  opacity: done ? 0.5 : 1,
-                                }}
-                              />
-                            ) : (
-                              <div style={{
-                                width: 48,
-                                height: 48,
-                                borderRadius: 6,
-                                background: colour.bg,
-                                flexShrink: 0,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                fontSize: 11,
-                                fontWeight: 700,
-                                color: colour.text,
-                              }}>
-                                {item.sku.substring(0, 2)}
-                              </div>
-                            )}
-
-                            {/* SKU + title */}
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
-                                <div style={{
-                                  background: colour.bg,
-                                  color: colour.text,
-                                  fontFamily: "monospace",
-                                  fontWeight: 700,
-                                  fontSize: "14px",
-                                  padding: "2px 8px",
-                                  borderRadius: "4px",
-                                  flexShrink: 0,
-                                  textDecoration: done ? "line-through" : "none",
-                                }}>
-                                  {item.sku || "—"}
-                                </div>
-                                {item.orderNames.length > 1 && (
-                                  <span style={{ fontSize: 11, color: "#888", flexShrink: 0 }}>
-                                    {item.orderNames.join(", ")}
-                                  </span>
-                                )}
-                              </div>
-                              <div style={{
-                                fontSize: 13,
-                                color: done ? "#999" : "#333",
-                                whiteSpace: "nowrap",
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                              }}>
-                                {item.title}
-                                {item.variantTitle && item.variantTitle !== "Default Title" ? ` · ${item.variantTitle}` : ""}
-                              </div>
-                            </div>
-
-                            {/* Counter */}
-                            <div style={{
-                              fontFamily: "monospace",
-                              fontWeight: 700,
-                              fontSize: "16px",
-                              color: over ? "#d72c0d" : done ? "#008060" : partial ? "#e1a900" : "#6d7175",
-                              minWidth: "52px",
-                              textAlign: "right",
-                              flexShrink: 0,
-                            }}>
-                              {item.scanned}/{item.quantity}
-                            </div>
-
-                            {/* Tick */}
-                            <div style={{ fontSize: "20px", width: "24px", textAlign: "center", flexShrink: 0 }}>
-                              {over ? "⚠️" : done ? "✅" : partial ? "◑" : "○"}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </BlockStack>
-
-                  <Divider />
-
-                  <InlineStack gap="200">
-                    <Button onClick={undoLast} disabled={!history.length} tone="critical" variant="plain">↩ Undo Last</Button>
-                    <Button onClick={resetScans} tone="critical" variant="plain">Reset All Scans</Button>
-                  </InlineStack>
+                  <Text variant="headingMd" as="h2">Select Customer / Order</Text>
+                  {loadingOrders ? (
+                    <InlineStack align="center"><Spinner size="small" /></InlineStack>
+                  ) : (
+                    <Select
+                      label="Unfulfilled orders — grouped by customer"
+                      options={groupedOptions()}
+                      value={selectedOrderIds.length > 0 ? `MERGE:${selectedOrderIds.join(",")}` : ""}
+                      onChange={selectOrder}
+                    />
+                  )}
+                  {selectedOrders.length > 0 && (
+                    <InlineStack gap="200" wrap>
+                      {selectedOrders.map(o => (
+                        <Badge key={o.id} tone="info">{o.name}</Badge>
+                      ))}
+                      <Badge>{selectedOrders[0].customer}</Badge>
+                      <Badge>{totalQty} item{totalQty !== 1 ? "s" : ""}</Badge>
+                      {selectedOrders.length > 1 && (
+                        <Badge tone="attention">{selectedOrders.length} orders merged</Badge>
+                      )}
+                    </InlineStack>
+                  )}
                 </BlockStack>
               </Card>
-            </Layout.Section>
-          </>
-        )}
+
+              {/* Scan input */}
+              {packItems.length > 0 && (
+                <Card>
+                  <BlockStack gap="300">
+                    <Text variant="headingMd" as="h2">Scan / Enter SKU</Text>
+                    <TextField
+                      label=""
+                      labelHidden
+                      value={scanValue}
+                      onChange={handleScanChange}
+                      onKeyDown={e => e.key === "Enter" && confirmScan()}
+                      placeholder="Scan barcode or type SKU…"
+                      autoComplete="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      ref={scanRef}
+                      size="large"
+                    />
+                    {scanMsg.text && (
+                      <Box
+                        background={
+                          scanMsg.tone === "success" ? "bg-fill-success" :
+                          scanMsg.tone === "critical" ? "bg-fill-critical" :
+                          "bg-fill-warning"
+                        }
+                        padding="200"
+                        borderRadius="200"
+                      >
+                        <Text variant="bodyMd" as="p" fontWeight="semibold">{scanMsg.text}</Text>
+                      </Box>
+                    )}
+                  </BlockStack>
+                </Card>
+              )}
+
+            </div>
+
+            {/* RIGHT COLUMN */}
+            {packItems.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                {/* Progress */}
+                <Card>
+                  <BlockStack gap="200">
+                    <InlineStack align="space-between">
+                      <Text variant="bodyMd" as="p" tone="subdued">{scannedQty} / {totalQty} items confirmed</Text>
+                      <Text variant="bodyMd" as="p" fontWeight="bold">{progressPct}%</Text>
+                    </InlineStack>
+                    <ProgressBar
+                      progress={progressPct}
+                      tone={hasOverScan ? "critical" : progressPct === 100 ? "success" : "highlight"}
+                      size="medium"
+                    />
+                  </BlockStack>
+                </Card>
+
+                {/* Pick list */}
+                <Card>
+                  <BlockStack gap="400">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <Text variant="headingMd" as="h2">Pick List</Text>
+                      <ButtonGroup>
+                        <Button variant={filter === "all" ? "primary" : "secondary"} onClick={() => setFilter("all")} size="slim">All</Button>
+                        <Button variant={filter === "remaining" ? "primary" : "secondary"} onClick={() => setFilter("remaining")} size="slim">Remaining</Button>
+                        <Button variant={filter === "done" ? "primary" : "secondary"} onClick={() => setFilter("done")} size="slim">Done</Button>
+                      </ButtonGroup>
+                    </InlineStack>
+
+                    <Divider />
+
+                    <BlockStack gap="200">
+                      {filteredItems.length === 0 ? (
+                        <Box padding="400">
+                          <Text as="p" tone="subdued" alignment="center">
+                            {filter === "remaining" ? "🎉 All items packed!" : "No items in this view."}
+                          </Text>
+                        </Box>
+                      ) : (
+                        filteredItems.map(item => {
+                          const done = item.scanned >= item.quantity;
+                          const over = item.scanned > item.quantity;
+                          const partial = item.scanned > 0 && item.scanned < item.quantity;
+                          const colour = getPrefixColour(item.sku);
+                          const isNext = item === nextItem;
+
+                          return (
+                            <div
+                              key={item.id}
+                              onClick={() => { setScanValue(item.sku); scanRef.current?.focus(); }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "12px",
+                                padding: "10px 14px",
+                                borderRadius: "8px",
+                                border: `1px solid ${over ? "#d72c0d" : isNext ? colour.bg : done ? "#e3e3e3" : partial ? "#e1a900" : "#e3e3e3"}`,
+                                borderLeft: `5px solid ${colour.bg}`,
+                                background: over ? "#fff4f4" : isNext ? `${colour.bg}22` : done ? "#f8f8f8" : "#ffffff",
+                                cursor: "pointer",
+                                opacity: done ? 0.55 : 1,
+                                transition: "all 0.15s",
+                              }}
+                            >
+                              {item.imageUrl ? (
+                                <img
+                                  src={item.imageUrl}
+                                  alt={item.title}
+                                  style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 5, flexShrink: 0, opacity: done ? 0.5 : 1 }}
+                                />
+                              ) : (
+                                <div style={{
+                                  width: 40, height: 40, borderRadius: 5, background: colour.bg, flexShrink: 0,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  fontSize: 10, fontWeight: 700, color: colour.text,
+                                }}>
+                                  {item.sku.substring(0, 2)}
+                                </div>
+                              )}
+
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                                  <div style={{
+                                    background: colour.bg, color: colour.text,
+                                    fontFamily: "monospace", fontWeight: 700, fontSize: "13px",
+                                    padding: "2px 7px", borderRadius: "4px", flexShrink: 0,
+                                    textDecoration: done ? "line-through" : "none",
+                                  }}>
+                                    {item.sku || "—"}
+                                  </div>
+                                  {item.orderNames.length > 1 && (
+                                    <span style={{ fontSize: 10, color: "#888" }}>{item.orderNames.join(", ")}</span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 12, color: done ? "#999" : "#444", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  {item.title}
+                                  {item.variantTitle && item.variantTitle !== "Default Title" ? ` · ${item.variantTitle}` : ""}
+                                </div>
+                              </div>
+
+                              <div style={{
+                                fontFamily: "monospace", fontWeight: 700, fontSize: "15px",
+                                color: over ? "#d72c0d" : done ? "#008060" : partial ? "#e1a900" : "#6d7175",
+                                minWidth: "46px", textAlign: "right", flexShrink: 0,
+                              }}>
+                                {item.scanned}/{item.quantity}
+                              </div>
+
+                              <div style={{ fontSize: "18px", width: "22px", textAlign: "center", flexShrink: 0 }}>
+                                {over ? "⚠️" : done ? "✅" : partial ? "◑" : "○"}
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </BlockStack>
+
+                    <Divider />
+
+                    <InlineStack gap="200">
+                      <Button onClick={undoLast} disabled={!history.length} tone="critical" variant="plain">↩ Undo Last</Button>
+                      <Button onClick={resetScans} tone="critical" variant="plain">Reset All Scans</Button>
+                    </InlineStack>
+                  </BlockStack>
+                </Card>
+
+              </div>
+            )}
+          </div>
+        </Layout.Section>
 
         {!loadingOrders && !packItems.length && selectedOrderIds.length === 0 && (
           <Layout.Section>
