@@ -42,8 +42,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const data = await response.json();
 
   if (data.errors || !data.data) {
-    console.error("GraphQL errors:", JSON.stringify(data.errors?.graphQLErrors ?? data.errors ?? data, null, 2));
-    return Response.json({ orders: [], error: "GraphQL error" }, { status: 200 });
+    const detail = JSON.stringify(data?.errors?.graphQLErrors ?? data?.errors ?? data, null, 2);
+    console.error("PACK_CHECK_ERROR:", detail);
+    return Response.json({ orders: [], error: detail }, { status: 200 });
   }
 
   const orders = data.data.orders.edges.map((edge: any) => {
