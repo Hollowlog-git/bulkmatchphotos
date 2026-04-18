@@ -8,21 +8,37 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const response = await admin.graphql(`
       #graphql
       query {
-        orders(first: 50, query: "fulfillment_status:unfulfilled") {
+        orders(
+          first: 50,
+          query: "fulfillment_status:unfulfilled status:open"
+        ) {
           edges {
             node {
               id
               name
               createdAt
               displayFulfillmentStatus
-              customer { displayName }
+              cancelledAt
+              customer {
+                id
+                displayName
+              }
               lineItems(first: 50) {
                 edges {
                   node {
                     id
                     title
                     quantity
-                    variant { sku title }
+                    variant {
+                      sku
+                      title
+                      product {
+                        id
+                        featuredImage {
+                          url
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -39,21 +55,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return Response.json({ orders: [] });
     }
 
-    const orders = data.data.orders.edges.map((edge: any) => ({
-      id: edge.node.id,
-      name: edge.node.name,
-      createdAt: edge.node.createdAt,
-      status: edge.node.displayFulfillmentStatus,
-      customer: edge.node.customer?.displayName ?? "Guest",
-      lineItems: edge.node.lineItems.edges.map((le: any) => ({
-        id: le.node.id,
-        title: le.node.title,
-        quantity: le.node.quantity,
-        sku: le.node.variant?.sku ?? "",
-        variantTitle: le.node.variant?.title,
-        imageUrl: null,
-      })),
-    }));
+    const orders = data.data.orders.edges
+      .filter((edge: any) => !edge.node.cancelledAt)
+      .map((edge: any) => {
+        const o = edge.node;
+        return {
+          id: o.id,
+          name: o.name,
+          createdAt: o.createdAt,
+          status: o.displayFulfillmentStatus,
+          customerId: o.customer?.id ?? null,
+          customer: o.customer?.displayName ?? "Guest",
+          lineItems: o.lineItems.edges.map((le: any) => ({
+            id: le.node.id,
+            title: le.node.title,
+            quantity: le.node.quantity,
+            sku: le.node.variant?.sku ?? "",
+            variantTitle: le.node.variant?.title,
+            imageUrl: le.node.variant?.product?.featuredImage?.url ?? null,
+          })),
+        };
+      });
 
     return Response.json({ orders });
 
