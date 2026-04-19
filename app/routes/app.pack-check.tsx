@@ -74,6 +74,8 @@ const PALETTE = [
   { bg: "#ffcc99", text: "#5c2800" },
 ];
 
+const STORAGE_KEY = "packcheck_session";
+
 function getPrefixColour(sku: string) {
   if (!sku || sku.length < 2) return PALETTE[0];
   const prefix = sku.substring(0, 2).toUpperCase();
@@ -99,6 +101,21 @@ function fmt(amount: number, currency: string) {
   return `$${amount.toFixed(2)} ${currency}`;
 }
 
+function timeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}d ago`;
+  if (hours > 0) return `${hours}h ago`;
+  if (mins > 0) return `${mins}m ago`;
+  return "just now";
+}
+
+function oldestOrderAge(customerOrders: Order[]): number {
+  return Math.max(...customerOrders.map(o => Date.now() - new Date(o.createdAt).getTime()));
+}
+
 export default function PackCheck() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -109,22 +126,50 @@ export default function PackCheck() {
   const [scanMsg, setScanMsg] = useState<{ text: string; tone: "success" | "critical" | "warning" | "" }>({ text: "", tone: "" });
   const [filter, setFilter] = useState<"all" | "remaining" | "done">("all");
   const [history, setHistory] = useState<string[]>([]);
-  const [showComplete, setShowComplete] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const packItemsRef = useRef<PackItem[]>([]);
   const ordersRef = useRef<Order[]>([]);
   const selectValueRef = useRef<string>("");
+  const historyRef = useRef<string[]>([]);
 
   useEffect(() => { packItemsRef.current = packItems; }, [packItems]);
   useEffect(() => { ordersRef.current = orders; }, [orders]);
   useEffect(() => { selectValueRef.current = selectValue; }, [selectValue]);
+  useEffect(() => { historyRef.current = history; }, [history]);
 
   useEffect(() => {
     setTimeout(() => scanRef.current?.focus(), 300);
-  }, [packItems.length]);
+  }, []);
 
-  const fetchOrders = useCallback(async () => {
+  // ── SAVE/RESTORE SESSION ─────────────────────────────────────────────────
+  function saveSession(customer: string, items: PackItem[]) {
+    try {
+      const scannedMap: Record<string, number> = {};
+      for (const item of items) {
+        if (item.scanned > 0) scannedMap[item.sku || item.id] = item.scanned;
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ customer, scannedMap, ts: Date.now() }));
+    } catch {}
+  }
+
+  function loadSession(): { customer: string; scannedMap: Record<string, number> } | null {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      const s = JSON.parse(raw);
+      // Expire after 24 hours
+      if (Date.now() - s.ts > 86400000) { localStorage.removeItem(STORAGE_KEY); return null; }
+      return s;
+    } catch { return null; }
+  }
+
+  function clearSession() {
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  }
+
+  // ── FETCH ORDERS ──────────────────────────────────────────────────────────
+  const fetchOrders = useCallback(async (restoreSession = true) => {
     setLoadingOrders(true);
     try {
       const res = await fetch("/api/orders");
@@ -139,13 +184,25 @@ export default function PackCheck() {
           if (!groups.has(order.customer)) groups.set(order.customer, []);
           groups.get(order.customer)!.push(order);
         }
-        let latestCustomer = "";
-        let latestDate = 0;
-        for (const [customer, customerOrders] of groups.entries()) {
-          const maxDate = Math.max(...customerOrders.map(o => new Date(o.createdAt).getTime()));
-          if (maxDate > latestDate) { latestDate = maxDate; latestCustomer = customer; }
+
+        // Check for saved session first
+        const session = restoreSession ? loadSession() : null;
+        let targetCustomer = "";
+
+        if (session && groups.has(session.customer)) {
+          targetCustomer = session.customer;
+        } else {
+          // Auto-select most recent
+          let latestDate = 0;
+          for (const [customer, customerOrders] of groups.entries()) {
+            const maxDate = Math.max(...customerOrders.map(o => new Date(o.createdAt).getTime()));
+            if (maxDate > latestDate) { latestDate = maxDate; targetCustomer = customer; }
+          }
         }
-        if (latestCustomer) selectOrderByCustomer(latestCustomer, fetched);
+
+        if (targetCustomer) {
+          selectOrderByCustomer(targetCustomer, fetched, session?.scannedMap);
+        }
       }
     } catch (e) {
       console.error("Failed to fetch orders", e);
@@ -156,6 +213,7 @@ export default function PackCheck() {
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
 
+  // ── MOVE TO NEXT ORDER ────────────────────────────────────────────────────
   function moveToNextOrder() {
     const allOrders = ordersRef.current;
     const currentCustomer = selectValueRef.current;
@@ -177,6 +235,7 @@ export default function PackCheck() {
     const nextIdx = currentIdx + 1;
 
     if (nextIdx < customers.length) {
+      clearSession();
       selectOrderByCustomer(customers[nextIdx], allOrders);
       setScanMsg({ text: `→ Moved to ${customers[nextIdx]}`, tone: "success" });
     } else {
@@ -184,12 +243,13 @@ export default function PackCheck() {
     }
   }
 
-  function selectOrderByCustomer(customer: string, orderList: Order[]) {
+  // ── SELECT ORDER ──────────────────────────────────────────────────────────
+  function selectOrderByCustomer(customer: string, orderList: Order[], scannedMap?: Record<string, number>) {
     setSelectValue(customer);
     selectValueRef.current = customer;
     setHistory([]);
+    historyRef.current = [];
     setScanMsg({ text: "", tone: "" });
-    setShowComplete(false);
     setFilter("all");
 
     const customerOrders = orderList.filter(o => o.customer === customer);
@@ -211,6 +271,14 @@ export default function PackCheck() {
       }
     }
 
+    // Restore scanned counts if we have a session
+    if (scannedMap) {
+      for (const [key, count] of Object.entries(scannedMap)) {
+        const item = map.get(key);
+        if (item) item.scanned = count;
+      }
+    }
+
     const sorted = [...map.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
     setPackItems(sorted);
     packItemsRef.current = sorted;
@@ -227,11 +295,14 @@ export default function PackCheck() {
       setSelectedOrderIds([]);
       setPackItems([]);
       packItemsRef.current = [];
+      clearSession();
       return;
     }
+    clearSession();
     selectOrderByCustomer(value, ordersRef.current);
   }
 
+  // ── GLOBAL KEY CAPTURE ────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
@@ -284,6 +355,7 @@ export default function PackCheck() {
     return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, []);
 
+  // ── COMPUTED VALUES ───────────────────────────────────────────────────────
   const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
   const totalShipping = selectedOrders.reduce((s, o) => s + o.shippingAmount, 0);
   const noShippingPaid = selectedOrders.length > 0 && totalShipping === 0;
@@ -293,6 +365,39 @@ export default function PackCheck() {
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
 
+  const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
+  const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
+  const progressPct = totalQty ? Math.round((scannedQty / totalQty) * 100) : 0;
+  const hasOverScan = packItems.some(i => i.scanned > i.quantity);
+  const allPacked = packItems.length > 0 && packItems.every(i => i.scanned >= i.quantity) && !hasOverScan;
+
+  const mostValuable = packItems.length > 0
+    ? [...packItems].sort((a, b) => (b.unitPrice * b.quantity) - (a.unitPrice * a.quantity))[0]
+    : null;
+
+  // Sort: unpacked first (by SKU), done items at bottom
+  const sortedPackItems = [...packItems].sort((a, b) => {
+    const aDone = a.scanned >= a.quantity;
+    const bDone = b.scanned >= b.quantity;
+    if (aDone && !bDone) return 1;
+    if (!aDone && bDone) return -1;
+    return a.sortKey.localeCompare(b.sortKey);
+  });
+
+  const filteredItems = sortedPackItems.filter(item => {
+    const done = item.scanned >= item.quantity;
+    if (filter === "remaining") return !done;
+    if (filter === "done") return done;
+    return true;
+  });
+
+  const nextItem = packItems.find(i => i.scanned < i.quantity);
+  const nextColour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
+
+  // Total unfulfilled order count across all customers
+  const totalUnfulfilledCount = orders.length;
+
+  // ── SCAN LOGIC ────────────────────────────────────────────────────────────
   function handleScanChange(value: string) {
     setScanValue(value);
     if (autoConfirmTimer.current) clearTimeout(autoConfirmTimer.current);
@@ -325,15 +430,16 @@ export default function PackCheck() {
         setScanMsg({ text: `⚠️ ${label} — OVER-SCANNED (${item.scanned}/${item.quantity})`, tone: "critical" });
       } else if (item.scanned === item.quantity) {
         setScanMsg({ text: `✓ ${label} complete`, tone: "success" });
-        if (updated.every(i => i.scanned === i.quantity)) setTimeout(() => setShowComplete(true), 400);
+        if (updated.every(i => i.scanned === i.quantity)) setTimeout(() => setScanMsg({ text: "🎉 All packed!", tone: "success" }), 400);
       } else {
         setScanMsg({ text: `✓ ${label} (${item.scanned}/${item.quantity})`, tone: "success" });
       }
       packItemsRef.current = updated;
+      saveSession(selectValueRef.current, updated);
       return updated;
     });
 
-    setHistory(h => [...h, items[idx].sku || items[idx].title]);
+    setHistory(h => { const next = [...h, items[idx].sku || items[idx].title]; historyRef.current = next; return next; });
     setTimeout(() => scanRef.current?.focus(), 50);
   }
 
@@ -351,63 +457,55 @@ export default function PackCheck() {
         setScanMsg({ text: `⚠️ ${key} — OVER-SCANNED`, tone: "critical" });
       } else if (u.scanned === u.quantity) {
         setScanMsg({ text: `✓ ${key} complete`, tone: "success" });
-        if (updated.every(i => i.scanned === i.quantity)) setTimeout(() => setShowComplete(true), 400);
+        if (updated.every(i => i.scanned === i.quantity)) setTimeout(() => setScanMsg({ text: "🎉 All packed!", tone: "success" }), 400);
       } else {
         setScanMsg({ text: `✓ ${key} (${u.scanned}/${u.quantity})`, tone: "success" });
       }
       packItemsRef.current = updated;
+      saveSession(selectValueRef.current, updated);
       return updated;
     });
-    setHistory(h => [...h, key]);
+    setHistory(h => { const next = [...h, key]; historyRef.current = next; return next; });
   }
 
   function markPacked(item: PackItem) { markPackedDirect(item); }
 
   function undoLastDirect() {
-    if (!history.length) return;
-    const lastKey = history[history.length - 1];
-    setHistory(prev => prev.slice(0, -1));
+    const h = historyRef.current;
+    if (!h.length) {
+      setScanMsg({ text: "Nothing to undo.", tone: "warning" });
+      return;
+    }
+    const lastKey = h[h.length - 1];
+    const newHistory = h.slice(0, -1);
+    setHistory(newHistory);
+    historyRef.current = newHistory;
     setPackItems(prev => {
       const idx = prev.findIndex(i => (i.sku || i.title) === lastKey);
       if (idx === -1) return prev;
       const updated = [...prev];
       updated[idx] = { ...updated[idx], scanned: Math.max(0, updated[idx].scanned - 1) };
       packItemsRef.current = updated;
+      saveSession(selectValueRef.current, updated);
       return updated;
     });
     setScanMsg({ text: `↩ Undid: ${lastKey}`, tone: "warning" });
-    setShowComplete(false);
   }
 
   function undoLast() { undoLastDirect(); }
 
   function resetScans() {
+    if (!confirm("Reset all scan counts for this order?")) return;
     const reset = packItems.map(i => ({ ...i, scanned: 0 }));
     setPackItems(reset);
     packItemsRef.current = reset;
     setHistory([]);
+    historyRef.current = [];
     setScanMsg({ text: "Scans reset.", tone: "warning" });
-    setShowComplete(false);
+    clearSession();
   }
 
-  const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
-  const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
-  const progressPct = totalQty ? Math.round((scannedQty / totalQty) * 100) : 0;
-  const hasOverScan = packItems.some(i => i.scanned > i.quantity);
-  const allPacked = packItems.length > 0 && packItems.every(i => i.scanned >= i.quantity) && !hasOverScan;
-  const mostValuable = packItems.length > 0
-    ? [...packItems].sort((a, b) => (b.unitPrice * b.quantity) - (a.unitPrice * a.quantity))[0]
-    : null;
-
-  const filteredItems = packItems.filter(item => {
-    const done = item.scanned >= item.quantity;
-    if (filter === "remaining") return !done;
-    if (filter === "done") return done;
-    return true;
-  });
-  const nextItem = packItems.find(i => i.scanned < i.quantity);
-  const nextColour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
-
+  // ── GROUPED OPTIONS ───────────────────────────────────────────────────────
   const groupedOptions = () => {
     const groups = new Map<string, Order[]>();
     for (const order of orders) {
@@ -426,8 +524,12 @@ export default function PackCheck() {
       const orderLabel = orderCount > 1 ? `${orderCount} orders` : customerOrders[0].name;
       const totalS = customerOrders.reduce((s, o) => s + o.shippingAmount, 0);
       const hasIssue = totalS === 0 || customerOrders.some(o => o.discountCodes.length > 0);
+      const hasNoSku = customerOrders.some(o => o.lineItems.some(i => !i.sku));
+      const ageMs = oldestOrderAge(customerOrders);
+      const ageDays = Math.floor(ageMs / 86400000);
+      const ageLabel = ageDays >= 2 ? ` 🕐 ${ageDays}d` : "";
       options.push({
-        label: `${customer} — ${orderLabel} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${hasIssue ? " ⚠️" : ""}`,
+        label: `${customer} — ${orderLabel} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}`,
         value: customer,
       });
     }
@@ -438,9 +540,54 @@ export default function PackCheck() {
     <Page
       title="Pack Check"
       subtitle="J = mark packed · K = undo · Space = next order"
-      primaryAction={<Button onClick={fetchOrders} loading={loadingOrders}>Refresh Orders</Button>}
     >
       <Layout>
+
+        {/* ── TOP BAR: ORDER SELECT + PROGRESS ── */}
+        <Layout.Section>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            {/* Order select */}
+            <div style={{ flex: "1 1 300px", minWidth: 0 }}>
+              {loadingOrders ? (
+                <InlineStack align="start"><Spinner size="small" /><Text as="span" tone="subdued"> Loading orders…</Text></InlineStack>
+              ) : (
+                <Select
+                  label=""
+                  labelHidden
+                  options={groupedOptions()}
+                  value={selectValue}
+                  onChange={selectOrder}
+                />
+              )}
+            </div>
+
+            {/* Progress inline */}
+            {packItems.length > 0 && (
+              <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <ProgressBar
+                      progress={progressPct}
+                      tone={hasOverScan ? "critical" : progressPct === 100 ? "success" : "highlight"}
+                      size="medium"
+                    />
+                  </div>
+                  <Text variant="bodyMd" as="span" fontWeight="bold">{scannedQty}/{totalQty}</Text>
+                </div>
+              </div>
+            )}
+
+            {/* Unfulfilled count + Refresh */}
+            <InlineStack gap="200" blockAlign="center">
+              {totalUnfulfilledCount > 0 && (
+                <div style={{ background: "#d72c0d", color: "#fff", fontWeight: 700, fontSize: 12, padding: "3px 9px", borderRadius: 12, flexShrink: 0 }}>
+                  {totalUnfulfilledCount} unfulfilled
+                </div>
+              )}
+              <Button onClick={() => fetchOrders(false)} loading={loadingOrders}>Refresh</Button>
+            </InlineStack>
+          </div>
+        </Layout.Section>
 
         {/* ── WARNINGS ── */}
         {hasAnyIssue && (
@@ -544,21 +691,23 @@ export default function PackCheck() {
                         {fmt(nextItem.unitPrice, nextItem.currencyCode)}
                       </span>
                     )}
-                  </div>
-                  <InlineStack gap="300" blockAlign="center">
-                    <div style={{ fontSize: 13, color: "#888" }}>
-                      {nextItem.scanned}/{nextItem.quantity} packed
-                      {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
-                    </div>
                     {scanMsg.text && (
-                      <div style={{ padding: "8px 12px", borderRadius: 6, fontWeight: 700, fontSize: 14, background: scanMsg.tone === "success" ? "#d4f57a" : scanMsg.tone === "critical" ? "#ffb3b3" : "#fff176", color: scanMsg.tone === "success" ? "#2d4a00" : scanMsg.tone === "critical" ? "#5c0000" : "#4a3800" }}>
+                      <div style={{ padding: "6px 12px", borderRadius: 6, fontWeight: 700, fontSize: 14, background: scanMsg.tone === "success" ? "#d4f57a" : scanMsg.tone === "critical" ? "#ffb3b3" : "#fff176", color: scanMsg.tone === "success" ? "#2d4a00" : scanMsg.tone === "critical" ? "#5c0000" : "#4a3800" }}>
                         {scanMsg.text}
                       </div>
                     )}
-                    <Button variant="primary" onClick={() => markPacked(nextItem)}>
-                      ✓ Mark as packed <kbd style={{ marginLeft: 6, background: "rgba(0,0,0,0.15)", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>J</kbd>
-                    </Button>
-                  </InlineStack>
+                  </div>
+                  <div style={{ fontSize: 13, color: "#888" }}>
+                    {nextItem.scanned}/{nextItem.quantity} packed
+                    {nextItem.orderNames.length > 1 && ` · ${nextItem.orderNames.join(", ")}`}
+                  </div>
+                </div>
+                {/* Mark as packed — right side */}
+                <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+                  <Button variant="primary" size="large" onClick={() => markPacked(nextItem)}>
+                    ✓ Mark as packed
+                  </Button>
+                  <span style={{ fontSize: 11, color: "#888" }}>or press <kbd style={{ background: "#f0f0f0", padding: "1px 6px", borderRadius: 3, fontFamily: "monospace" }}>J</kbd></span>
                 </div>
               </div>
             </Card>
@@ -572,23 +721,23 @@ export default function PackCheck() {
             {/* LEFT COLUMN */}
             <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
               <Card>
-                <BlockStack gap="400">
-                  <Text variant="headingMd" as="h2">Select Customer / Order</Text>
-                  {loadingOrders ? (
-                    <InlineStack align="center"><Spinner size="small" /></InlineStack>
-                  ) : (
-                    <Select label="Unfulfilled orders — grouped by customer" options={groupedOptions()} value={selectValue} onChange={selectOrder} />
-                  )}
+                <BlockStack gap="300">
+                  <Text variant="headingMd" as="h2">Order Details</Text>
 
-                  {selectedOrders.length > 0 && (
+                  {selectedOrders.length > 0 ? (
                     <BlockStack gap="200">
                       <InlineStack gap="200" wrap blockAlign="center">
                         <Badge tone="info">{selectedOrders[0].customer}</Badge>
                         <Badge>{totalQty} item{totalQty !== 1 ? "s" : ""}</Badge>
                         {selectedOrders.length > 1 && <Badge tone="attention">{selectedOrders.length} orders merged</Badge>}
+                        {/* Timestamps */}
+                        {selectedOrders.map(o => (
+                          <span key={o.id} style={{ fontSize: 11, color: new Date(o.createdAt).getTime() < Date.now() - 172800000 ? "#d72c0d" : "#888" }}>
+                            {o.name} {timeAgo(o.createdAt)}
+                          </span>
+                        ))}
                       </InlineStack>
 
-                      {/* Email link */}
                       {customerEmail && (
                         <a
                           href={`https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(customerEmail)}&su=${encodeURIComponent("Your order from Hollowlog Cards")}`}
@@ -600,7 +749,6 @@ export default function PackCheck() {
                         </a>
                       )}
 
-                      {/* Shipping address */}
                       {shippingAddress && (
                         <div style={{ background: "#f8f8f8", borderRadius: 6, padding: "10px 12px", fontSize: 13 }}>
                           <div style={{ fontWeight: 700, color: "#333", marginBottom: 4 }}>
@@ -620,15 +768,7 @@ export default function PackCheck() {
                         </div>
                       )}
 
-                      <Divider />
-
-                      {/* Shipping summary */}
-                      <div style={{
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                        padding: "10px 14px", borderRadius: 8,
-                        background: totalShipping === 0 ? "#fff0f0" : "#f0fff4",
-                        border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}`,
-                      }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: totalShipping === 0 ? "#fff0f0" : "#f0fff4", border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}` }}>
                         <div>
                           <div style={{ fontWeight: 700, fontSize: 14, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
                             {totalShipping === 0 ? "❌ No shipping paid" : "✓ Shipping paid"}
@@ -653,6 +793,8 @@ export default function PackCheck() {
                         </BlockStack>
                       )}
                     </BlockStack>
+                  ) : (
+                    <Text as="p" tone="subdued">Select an order above to see details.</Text>
                   )}
                 </BlockStack>
               </Card>
@@ -682,16 +824,6 @@ export default function PackCheck() {
             {/* RIGHT COLUMN */}
             {packItems.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
-                <Card>
-                  <BlockStack gap="200">
-                    <InlineStack align="space-between">
-                      <Text variant="bodyMd" as="p" tone="subdued">{scannedQty} / {totalQty} items confirmed</Text>
-                      <Text variant="bodyMd" as="p" fontWeight="bold">{progressPct}%</Text>
-                    </InlineStack>
-                    <ProgressBar progress={progressPct} tone={hasOverScan ? "critical" : progressPct === 100 ? "success" : "highlight"} size="medium" />
-                  </BlockStack>
-                </Card>
-
                 <Card>
                   <BlockStack gap="400">
                     <InlineStack align="space-between" blockAlign="center">
@@ -739,13 +871,11 @@ export default function PackCheck() {
                                   {item.title}{item.variantTitle && item.variantTitle !== "Default Title" ? ` · ${item.variantTitle}` : ""}
                                 </div>
                               </div>
-
                               {item.unitPrice > 0 && (
                                 <div style={{ fontSize: 12, fontWeight: 700, color: done ? "#aaa" : "#333", flexShrink: 0, textAlign: "right", minWidth: 44 }}>
                                   ${item.unitPrice.toFixed(2)}
                                 </div>
                               )}
-
                               <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "15px", color: over ? "#d72c0d" : done ? "#008060" : partial ? "#e1a900" : "#6d7175", minWidth: "46px", textAlign: "right", flexShrink: 0 }}>
                                 {item.scanned}/{item.quantity}
                               </div>
@@ -763,7 +893,7 @@ export default function PackCheck() {
                     </BlockStack>
                     <Divider />
                     <InlineStack gap="200">
-                      <Button onClick={undoLast} disabled={!history.length} tone="critical" variant="plain">↩ Undo <kbd style={{ marginLeft: 4, background: "#f0f0f0", padding: "1px 5px", borderRadius: 3, fontSize: 11, color: "#666" }}>K</kbd></Button>
+                      <Button onClick={undoLast} disabled={history.length === 0} tone="critical" variant="plain">↩ Undo <kbd style={{ marginLeft: 4, background: "#f0f0f0", padding: "1px 5px", borderRadius: 3, fontSize: 11, color: "#666" }}>K</kbd></Button>
                       <Button onClick={resetScans} tone="critical" variant="plain">Reset</Button>
                       <Button onClick={moveToNextOrder} variant="plain">Next Order <kbd style={{ marginLeft: 4, background: "#f0f0f0", padding: "1px 5px", borderRadius: 3, fontSize: 11, color: "#666" }}>Space</kbd></Button>
                     </InlineStack>
