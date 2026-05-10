@@ -10,7 +10,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return Response.json({ error: "No order IDs provided" }, { status: 400 });
     }
 
-    // Fetch fulfillment order IDs for each order
     const allFulfillmentOrderIds: string[] = [];
 
     for (const orderId of orderIds) {
@@ -43,7 +42,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return Response.json({ error: "No open fulfillment orders found for these orders." }, { status: 400 });
     }
 
-    // Create fulfillment with customer notification
     const response = await admin.graphql(`
       #graphql
       mutation fulfillmentCreate($fulfillment: FulfillmentInput!) {
@@ -61,7 +59,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     `, {
       variables: {
         fulfillment: {
-          notifyCustomer: true,
+          notifyCustomer: false,
           fulfillmentLineItemsByFulfillmentOrder: allFulfillmentOrderIds.map((id: string) => ({
             fulfillmentOrderId: id,
           })),
