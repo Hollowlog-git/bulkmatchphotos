@@ -56,20 +56,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 country
               }
               discountCodes
-              fulfillmentOrders(first: 5) {
-                edges {
-                  node {
-                    id
-                    status
-                    assignedLocation {
-                      location {
-                        id
-                        name
-                      }
-                    }
-                  }
-                }
-              }
               lineItems(first: 50) {
                 edges {
                   node {
@@ -159,9 +145,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
 
         // Fulfillment orders — get open ones
-        const fulfillmentOrders = (o.fulfillmentOrders?.edges ?? [])
-          .map((fe: any) => fe.node)
-          .filter((fo: any) => fo.status === "OPEN" || fo.status === "IN_PROGRESS");
+
 
         return {
           id: o.id,
@@ -181,7 +165,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           currencyCode,
           discountCodes,
           shippingAddress,
-          fulfillmentOrders,
+          fulfillmentOrders: [],
           lineItems: o.lineItems.edges.map((le: any) => ({
             id: le.node.id,
             title: le.node.title,
