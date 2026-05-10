@@ -19,10 +19,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               createdAt
               displayFulfillmentStatus
               cancelledAt
+              channelInformation {
+                channelDefinition {
+                  channelName
+                  handle
+                }
+              }
               customer {
                 id
                 displayName
                 email
+                numberOfOrders
               }
               shippingLine {
                 title
@@ -49,12 +56,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                 country
               }
               discountCodes
+              fulfillmentOrders(first: 5) {
+                edges {
+                  node {
+                    id
+                    status
+                    assignedLocation {
+                      location {
+                        id
+                        name
+                      }
+                    }
+                  }
+                }
+              }
               lineItems(first: 50) {
                 edges {
                   node {
                     id
                     title
                     quantity
+                    product {
+                      id
+                      handle
+                      onlineStoreUrl
+                    }
                     originalUnitPriceSet {
                       shopMoney {
                         amount
@@ -71,6 +97,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                       title
                       product {
                         id
+                        handle
+                        onlineStoreUrl
                         featuredImage {
                           url
                         }
@@ -114,6 +142,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           country: sa.country ?? "",
         } : null;
 
+        // Channel detection
+        const channelName = o.channelInformation?.channelDefinition?.channelName ?? "";
+        const channelHandle = o.channelInformation?.channelDefinition?.handle ?? "";
+        let channel = "Unknown";
+        if (channelHandle === "trade-me" || channelName.toLowerCase().includes("trade")) {
+          channel = "Trade Me";
+        } else if (channelHandle === "online_store" || channelName.toLowerCase().includes("online")) {
+          channel = "Online Store";
+        } else if (channelHandle === "shopify_shop" || channelName.toLowerCase().includes("shop")) {
+          channel = "Shop App";
+        } else if (channelName) {
+          channel = channelName;
+        } else {
+          channel = "Trade Me"; // blank = Trade Me per your note
+        }
+
+        // Fulfillment orders — get open ones
+        const fulfillmentOrders = (o.fulfillmentOrders?.edges ?? [])
+          .map((fe: any) => fe.node)
+          .filter((fo: any) => fo.status === "OPEN" || fo.status === "IN_PROGRESS");
+
         return {
           id: o.id,
           name: o.name,
@@ -122,6 +171,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           customerId: o.customer?.id ?? null,
           customer: o.customer?.displayName ?? "Guest",
           customerEmail: o.customer?.email ?? null,
+          customerTotalOrders: o.customer?.numberOfOrders ?? null,
+          channel,
           shippingTitle: o.shippingLine?.title ?? "No shipping selected",
           shippingAmount: shippingDiscounted,
           shippingOriginalAmount: shippingOriginal,
@@ -130,6 +181,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           currencyCode,
           discountCodes,
           shippingAddress,
+          fulfillmentOrders,
           lineItems: o.lineItems.edges.map((le: any) => ({
             id: le.node.id,
             title: le.node.title,
@@ -137,6 +189,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             sku: le.node.variant?.sku ?? "",
             variantTitle: le.node.variant?.title,
             imageUrl: le.node.variant?.product?.featuredImage?.url ?? null,
+            productUrl: le.node.variant?.product?.onlineStoreUrl ?? le.node.product?.onlineStoreUrl ?? null,
+            productId: le.node.variant?.product?.id ?? le.node.product?.id ?? null,
             unitPrice: parseFloat(le.node.discountedUnitPriceSet?.shopMoney?.amount ?? le.node.originalUnitPriceSet?.shopMoney?.amount ?? "0"),
             originalUnitPrice: parseFloat(le.node.originalUnitPriceSet?.shopMoney?.amount ?? "0"),
             currencyCode: le.node.originalUnitPriceSet?.shopMoney?.currencyCode ?? currencyCode,
