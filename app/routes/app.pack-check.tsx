@@ -214,15 +214,15 @@ export default function PackCheck() {
 
   // ── FULFILLMENT ───────────────────────────────────────────────────────────
   async function fulfillOrders() {
-    const foIds = selectedOrders.flatMap(o => o.fulfillmentOrders.map(fo => fo.id));
-    if (!foIds.length) { setFulfillMsg({ text: "No open fulfillment orders found.", ok: false }); return; }
+    const orderIds = selectedOrders.map(o => o.id);
+    if (!orderIds.length) { setFulfillMsg({ text: "No orders selected.", ok: false }); return; }
     setFulfilling(true);
     setFulfillMsg(null);
     try {
       const res = await fetch("/api/fulfill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fulfillmentOrderIds: foIds }),
+        body: JSON.stringify({ orderIds }),
       });
       const data = await res.json();
       if (data.error) {

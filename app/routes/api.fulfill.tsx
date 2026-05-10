@@ -4,10 +4,43 @@ import { authenticate } from "../shopify.server";
 export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const { admin } = await authenticate.admin(request);
-    const { fulfillmentOrderIds } = await request.json();
+    const { orderIds } = await request.json();
 
-    if (!fulfillmentOrderIds?.length) {
-      return Response.json({ error: "No fulfillment order IDs provided" }, { status: 400 });
+    if (!orderIds?.length) {
+      return Response.json({ error: "No order IDs provided" }, { status: 400 });
+    }
+
+    // Fetch fulfillment order IDs for each order
+    const allFulfillmentOrderIds: string[] = [];
+
+    for (const orderId of orderIds) {
+      const foResponse = await admin.graphql(`
+        #graphql
+        query getFulfillmentOrders($orderId: ID!) {
+          order(id: $orderId) {
+            fulfillmentOrders(first: 10) {
+              edges {
+                node {
+                  id
+                  status
+                }
+              }
+            }
+          }
+        }
+      `, { variables: { orderId } });
+
+      const foData = await foResponse.json();
+      const foEdges = foData?.data?.order?.fulfillmentOrders?.edges ?? [];
+      for (const edge of foEdges) {
+        if (edge.node.status === "OPEN" || edge.node.status === "IN_PROGRESS") {
+          allFulfillmentOrderIds.push(edge.node.id);
+        }
+      }
+    }
+
+    if (!allFulfillmentOrderIds.length) {
+      return Response.json({ error: "No open fulfillment orders found for these orders." }, { status: 400 });
     }
 
     // Create fulfillment with customer notification
@@ -29,7 +62,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       variables: {
         fulfillment: {
           notifyCustomer: true,
-          fulfillmentLineItemsByFulfillmentOrder: fulfillmentOrderIds.map((id: string) => ({
+          fulfillmentLineItemsByFulfillmentOrder: allFulfillmentOrderIds.map((id: string) => ({
             fulfillmentOrderId: id,
           })),
         },
