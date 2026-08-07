@@ -89,6 +89,7 @@ export default function PackCheck() {
   const ordersRef = useRef<Order[]>([]);
   const selectValueRef = useRef<string>("");
   const historyRef = useRef<string[]>([]);
+  const lastSpokenRef = useRef<string>("");
 
   useEffect(() => { packItemsRef.current = packItems; }, [packItems]);
   useEffect(() => { ordersRef.current = orders; }, [orders]);
@@ -322,6 +323,26 @@ export default function PackCheck() {
   const nextItem = packItems.find(i => i.scanned < i.quantity);
   const nextColour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
   const totalUnfulfilledCount = orders.length;
+
+  // Speak the next SKU aloud whenever it changes
+  useEffect(() => {
+    if (!nextItem?.sku) return;
+    if (lastSpokenRef.current === nextItem.sku) return;
+    lastSpokenRef.current = nextItem.sku;
+    try {
+      if (!("speechSynthesis" in window)) return;
+      // "AB-376" -> "A B, 3 7 6" so digits are read individually
+      const m = nextItem.sku.match(/^([A-Z]{2})-(\d+)$/);
+      const spoken = m
+        ? `${m[1].split("").join(" ")}, ${m[2].split("").join(" ")}`
+        : nextItem.sku.split("").join(" ");
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(spoken);
+      utter.rate = 0.95;
+      utter.volume = 1;
+      window.speechSynthesis.speak(utter);
+    } catch {}
+  }, [nextItem?.sku]);
 
   function handleScanChange(value: string) {
     setScanValue(value);
