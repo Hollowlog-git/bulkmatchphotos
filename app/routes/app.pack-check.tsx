@@ -83,6 +83,9 @@ export default function PackCheck() {
   const [history, setHistory] = useState<string[]>([]);
   const [fulfilling, setFulfilling] = useState(false);
   const [fulfillMsg, setFulfillMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [muted, setMuted] = useState(() => {
+    try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
+  });
   const scanRef = useRef<HTMLInputElement>(null);
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const packItemsRef = useRef<PackItem[]>([]);
@@ -324,8 +327,15 @@ export default function PackCheck() {
   const nextColour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
   const totalUnfulfilledCount = orders.length;
 
+  // Persist mute preference, and stop speaking immediately when muted
+  useEffect(() => {
+    try { localStorage.setItem("packcheck_muted", muted ? "1" : "0"); } catch {}
+    if (muted && "speechSynthesis" in window) window.speechSynthesis.cancel();
+  }, [muted]);
+
   // Speak the next SKU aloud whenever it changes
   useEffect(() => {
+    if (muted) return;
     if (!nextItem?.sku) return;
     if (lastSpokenRef.current === nextItem.sku) return;
     lastSpokenRef.current = nextItem.sku;
@@ -342,7 +352,7 @@ export default function PackCheck() {
       utter.volume = 1;
       window.speechSynthesis.speak(utter);
     } catch {}
-  }, [nextItem?.sku]);
+  }, [nextItem?.sku, muted]);
 
   function handleScanChange(value: string) {
     setScanValue(value);
@@ -486,6 +496,7 @@ export default function PackCheck() {
                   {totalUnfulfilledCount} unfulfilled
                 </div>
               )}
+              <Button onClick={() => setMuted(m => !m)}>{muted ? "🔇 Muted" : "🔊 Sound on"}</Button>
               <Button onClick={() => fetchOrders(false)} loading={loadingOrders}>Refresh</Button>
             </InlineStack>
           </div>
