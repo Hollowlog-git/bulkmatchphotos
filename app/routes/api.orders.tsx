@@ -18,6 +18,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               name
               createdAt
               displayFulfillmentStatus
+              displayFinancialStatus
               cancelledAt
               channelInformation {
                 channelDefinition {
@@ -108,6 +109,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     const orders = data.data.orders.edges
       .filter((edge: any) => !edge.node.cancelledAt)
+      .filter((edge: any) => edge.node.displayFinancialStatus !== "PENDING")
       .map((edge: any) => {
         const o = edge.node;
         const shippingOriginal = parseFloat(o.shippingLine?.originalPriceSet?.shopMoney?.amount ?? "0");
@@ -152,6 +154,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           name: o.name,
           createdAt: o.createdAt,
           status: o.displayFulfillmentStatus,
+          financialStatus: o.displayFinancialStatus,
           customerId: o.customer?.id ?? null,
           customer: o.customer?.displayName ?? "Guest",
           customerEmail: o.customer?.email ?? null,

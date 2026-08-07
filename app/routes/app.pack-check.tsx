@@ -16,6 +16,7 @@ interface ShippingAddress {
 interface FulfillmentOrder { id: string; status: string; }
 interface Order {
   id: string; name: string; createdAt: string; status: string;
+  financialStatus: string;
   customerId: string | null; customer: string; customerEmail: string | null;
   customerTotalOrders: number | null; channel: string;
   shippingTitle: string; shippingAmount: number; shippingOriginalAmount: number;
@@ -297,6 +298,7 @@ export default function PackCheck() {
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
+  const hasSignature = selectedOrders.some(o => /signature/i.test(o.shippingTitle));
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
@@ -467,6 +469,21 @@ export default function PackCheck() {
             </InlineStack>
           </div>
         </Layout.Section>
+
+        {/* ── SIGNATURE REQUIRED ── */}
+        {hasSignature && (
+          <Layout.Section>
+            <div style={{ background: "#6b21a8", borderRadius: 10, padding: "18px 24px", display: "flex", alignItems: "center", gap: 14 }}>
+              <span style={{ fontSize: 30 }}>✍️</span>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 20 }}>Signature shipping selected</div>
+                <div style={{ color: "#e9d5ff", fontSize: 14 }}>
+                  {selectedOrders.filter(o => /signature/i.test(o.shippingTitle)).map(o => `${o.name} — ${o.shippingTitle}`).join(" · ")}
+                </div>
+              </div>
+            </div>
+          </Layout.Section>
+        )}
 
         {/* ── WARNINGS ── */}
         {hasAnyIssue && (
