@@ -19,6 +19,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               createdAt
               displayFulfillmentStatus
               displayFinancialStatus
+              currentTotalPriceSet {
+                shopMoney {
+                  amount
+                }
+              }
               cancelledAt
               channelInformation {
                 channelDefinition {
@@ -155,6 +160,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           createdAt: o.createdAt,
           status: o.displayFulfillmentStatus,
           financialStatus: o.displayFinancialStatus,
+          totalValue: parseFloat(o.currentTotalPriceSet?.shopMoney?.amount ?? "0"),
           customerId: o.customer?.id ?? null,
           customer: o.customer?.displayName ?? "Guest",
           customerEmail: o.customer?.email ?? null,

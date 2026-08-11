@@ -16,7 +16,7 @@ interface ShippingAddress {
 interface FulfillmentOrder { id: string; status: string; }
 interface Order {
   id: string; name: string; createdAt: string; status: string;
-  financialStatus: string;
+  financialStatus: string; totalValue: number;
   customerId: string | null; customer: string; customerEmail: string | null;
   customerTotalOrders: number | null; channel: string;
   shippingTitle: string; shippingAmount: number; shippingOriginalAmount: number;
@@ -93,6 +93,7 @@ export default function PackCheck() {
   const selectValueRef = useRef<string>("");
   const historyRef = useRef<string[]>([]);
   const lastSpokenRef = useRef<string>("");
+  const speechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { packItemsRef.current = packItems; }, [packItems]);
   useEffect(() => { ordersRef.current = orders; }, [orders]);
@@ -295,6 +296,7 @@ export default function PackCheck() {
 
   const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
   const totalShipping = selectedOrders.reduce((s, o) => s + o.shippingAmount, 0);
+  const totalOrderValue = selectedOrders.reduce((s, o) => s + o.totalValue, 0);
   const noShippingPaid = selectedOrders.length > 0 && totalShipping === 0;
   const allDiscountCodes = selectedOrders.flatMap(o => o.discountCodes.map(code => ({ code, orderName: o.name })));
   const hasAnyIssue = noShippingPaid || allDiscountCodes.length > 0;
@@ -330,7 +332,10 @@ export default function PackCheck() {
   // Persist mute preference, and stop speaking immediately when muted
   useEffect(() => {
     try { localStorage.setItem("packcheck_muted", muted ? "1" : "0"); } catch {}
-    if (muted && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    if (muted) {
+      if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    }
   }, [muted]);
 
   // Speak the next SKU aloud whenever it changes
@@ -347,10 +352,15 @@ export default function PackCheck() {
         ? `${m[1].split("").join(" ")}, ${m[2].split("").join(" ")}`
         : nextItem.sku.split("").join(" ");
       window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(spoken);
-      utter.rate = 0.95;
-      utter.volume = 1;
-      window.speechSynthesis.speak(utter);
+      if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
+      // Chrome/Edge often clip the first syllable if speak() fires right after
+      // cancel() — give the engine a beat to reset before queuing the utterance.
+      speechTimerRef.current = setTimeout(() => {
+        const utter = new SpeechSynthesisUtterance(spoken);
+        utter.rate = 0.95;
+        utter.volume = 1;
+        window.speechSynthesis.speak(utter);
+      }, 150);
     } catch {}
   }, [nextItem?.sku, muted]);
 
@@ -704,6 +714,13 @@ export default function PackCheck() {
                           </div>
                         </div>
                       )}
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: "#f0f4ff", border: "2px solid #2563eb" }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: "#2563eb" }}>💰 Order value</div>
+                        <div style={{ fontWeight: 700, fontSize: 20, color: "#2563eb" }}>
+                          {fmt(totalOrderValue, currencyCode)}
+                        </div>
+                      </div>
 
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: totalShipping === 0 ? "#fff0f0" : "#f0fff4", border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}` }}>
                         <div>
