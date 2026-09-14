@@ -34,6 +34,14 @@ const PALETTE = [
   { bg: "#f9c8e3", text: "#5c0030" }, { bg: "#ffcc99", text: "#5c2800" },
 ];
 const STORAGE_KEY = "packcheck_session";
+const OMNIVORE_SIGNATURE_SHIPPING_AMOUNT = 12.3;
+
+function isSignatureShipping(o: Order) {
+  if (/signature/i.test(o.shippingTitle)) return true;
+  // Omnivore orders don't label the shipping line "Signature" — it just says
+  // "Post" — so fall back to identifying it by its fixed $12.30 price.
+  return Math.abs(o.shippingAmount - OMNIVORE_SIGNATURE_SHIPPING_AMOUNT) < 0.01;
+}
 
 function getPrefixColour(sku: string) {
   if (!sku || sku.length < 2) return PALETTE[0];
@@ -304,7 +312,7 @@ export default function PackCheck() {
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
-  const hasSignature = selectedOrders.some(o => /signature/i.test(o.shippingTitle));
+  const hasSignature = selectedOrders.some(isSignatureShipping);
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
@@ -520,7 +528,7 @@ export default function PackCheck() {
               <div>
                 <div style={{ color: "#fff", fontWeight: 700, fontSize: 20 }}>Signature shipping selected</div>
                 <div style={{ color: "#e9d5ff", fontSize: 14 }}>
-                  {selectedOrders.filter(o => /signature/i.test(o.shippingTitle)).map(o => `${o.name} — ${o.shippingTitle}`).join(" · ")}
+                  {selectedOrders.filter(isSignatureShipping).map(o => `${o.name} — ${o.shippingTitle}`).join(" · ")}
                 </div>
               </div>
             </div>
