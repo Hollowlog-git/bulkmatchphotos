@@ -15,7 +15,7 @@ interface ShippingAddress {
 }
 interface FulfillmentOrder { id: string; status: string; }
 interface Order {
-  id: string; name: string; createdAt: string; status: string;
+  id: string; name: string; createdAt: string; note: string | null; status: string;
   financialStatus: string; totalValue: number;
   customerId: string | null; customer: string; customerEmail: string | null;
   customerTotalOrders: number | null; channel: string;
@@ -309,6 +309,9 @@ export default function PackCheck() {
   const allDiscountCodes = selectedOrders.flatMap(o => o.discountCodes.map(code => ({ code, orderName: o.name })));
   const hasAnyIssue = noShippingPaid || allDiscountCodes.length > 0;
   const shippingAddress = selectedOrders[0]?.shippingAddress ?? null;
+  const orderNotes = selectedOrders
+    .filter(o => o.note && o.note.trim())
+    .map(o => ({ orderName: o.name, note: o.note as string }));
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
@@ -702,6 +705,18 @@ export default function PackCheck() {
                           style={{ fontSize: 13, color: "#2563eb", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
                           ✉️ {customerEmail}
                         </a>
+                      )}
+
+                      {orderNotes.length > 0 && (
+                        <div style={{ background: "#fff3b0", border: "1px solid #e6c200", borderRadius: 6, padding: "10px 12px", fontSize: 13 }}>
+                          <div style={{ fontWeight: 700, color: "#665200", marginBottom: 4 }}>📝 Order note{orderNotes.length > 1 ? "s" : ""}</div>
+                          {orderNotes.map(n => (
+                            <div key={n.orderName} style={{ color: "#4a3c00", lineHeight: 1.5 }}>
+                              {orderNotes.length > 1 && <strong>{n.orderName}: </strong>}
+                              {n.note}
+                            </div>
+                          ))}
+                        </div>
                       )}
 
                       {shippingAddress && (

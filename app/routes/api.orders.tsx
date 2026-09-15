@@ -17,6 +17,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
               id
               name
               createdAt
+              note
               displayFulfillmentStatus
               displayFinancialStatus
               currentTotalPriceSet {
@@ -158,6 +159,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           id: o.id,
           name: o.name,
           createdAt: o.createdAt,
+          note: o.note ?? null,
           status: o.displayFulfillmentStatus,
           financialStatus: o.displayFinancialStatus,
           totalValue: parseFloat(o.currentTotalPriceSet?.shopMoney?.amount ?? "0"),
