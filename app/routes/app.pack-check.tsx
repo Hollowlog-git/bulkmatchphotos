@@ -33,6 +33,12 @@ const PALETTE = [
   { bg: "#87d4f5", text: "#003a52" }, { bg: "#fff176", text: "#4a3800" },
   { bg: "#f9c8e3", text: "#5c0030" }, { bg: "#ffcc99", text: "#5c2800" },
 ];
+const PURPLE = { bg: "#d4b3f5", text: "#3d1361" };
+// Purple joins the rotation from SKU prefix AM onward (idx 12): AM is purple,
+// then AN restarts the green/red/blue/yellow/pink/orange cycle, looping
+// through purple again every 7 prefixes from there.
+const PURPLE_START_IDX = 12;
+const PALETTE_FROM_PURPLE = [PURPLE, ...PALETTE];
 const STORAGE_KEY = "packcheck_session";
 const OMNIVORE_SIGNATURE_SHIPPING_AMOUNT = 12.3;
 
@@ -48,7 +54,8 @@ function getPrefixColour(sku: string) {
   const prefix = sku.substring(0, 2).toUpperCase();
   if (!/^[A-Z]{2}$/.test(prefix)) return { bg: "#e0e0e0", text: "#444" };
   const idx = (prefix.charCodeAt(0) - 65) * 26 + (prefix.charCodeAt(1) - 65);
-  return PALETTE[idx % PALETTE.length];
+  if (idx < PURPLE_START_IDX) return PALETTE[idx % PALETTE.length];
+  return PALETTE_FROM_PURPLE[(idx - PURPLE_START_IDX) % PALETTE_FROM_PURPLE.length];
 }
 function normaliseSku(raw: string): string {
   const s = raw.trim().toUpperCase().replace(/\s+/g, "");
