@@ -507,8 +507,15 @@ export default function PackCheck() {
   };
 
   return (
-    <Page title="Pack Check" subtitle="J = mark packed · K = undo · Space = next order">
+    <Page>
       <Layout>
+
+        <Layout.Section>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+            <Text variant="headingLg" as="h1">Pack Check</Text>
+            <Text variant="bodySm" tone="subdued" as="span">J = mark packed · K = undo · Space = next order</Text>
+          </div>
+        </Layout.Section>
 
         {/* ── TOP BAR ── */}
         <Layout.Section>
