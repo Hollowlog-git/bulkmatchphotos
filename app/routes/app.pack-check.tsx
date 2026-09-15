@@ -3,6 +3,7 @@ import {
   Page, Layout, Card, Text, Button, ButtonGroup, Select, TextField,
   Badge, ProgressBar, Divider, InlineStack, BlockStack, Box, EmptyState, Spinner,
 } from "@shopify/polaris";
+import { normaliseSku, skuSortKey, resolveDrawerNumber, type DrawerRangeConfig } from "../lib/sku";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -57,17 +58,6 @@ function getPrefixColour(sku: string) {
   if (idx < PURPLE_START_IDX) return PALETTE[idx % PALETTE.length];
   return PALETTE_FROM_PURPLE[(idx - PURPLE_START_IDX) % PALETTE_FROM_PURPLE.length];
 }
-function normaliseSku(raw: string): string {
-  const s = raw.trim().toUpperCase().replace(/\s+/g, "");
-  const m = s.match(/^([A-Z]{2})-?(\d{1,3})$/);
-  if (!m) return s;
-  return m[1] + "-" + m[2].padStart(3, "0");
-}
-function skuSortKey(sku: string): string {
-  const m = sku.match(/^([A-Z]{2})-(\d+)$/);
-  if (!m) return sku;
-  return m[1] + m[2].padStart(6, "0");
-}
 function fmt(amount: number, currency: string) { return `$${amount.toFixed(2)} ${currency}`; }
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -101,6 +91,7 @@ export default function PackCheck() {
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
   });
+  const [drawers, setDrawers] = useState<DrawerRangeConfig[]>([]);
   const scanRef = useRef<HTMLInputElement>(null);
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const packItemsRef = useRef<PackItem[]>([]);
@@ -108,6 +99,7 @@ export default function PackCheck() {
   const selectValueRef = useRef<string>("");
   const historyRef = useRef<string[]>([]);
   const lastSpokenRef = useRef<string>("");
+  const lastSpokenDrawerRef = useRef<number | null>(null);
   const speechTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { packItemsRef.current = packItems; }, [packItems]);
@@ -115,6 +107,15 @@ export default function PackCheck() {
   useEffect(() => { selectValueRef.current = selectValue; }, [selectValue]);
   useEffect(() => { historyRef.current = history; }, [history]);
   useEffect(() => { setTimeout(() => scanRef.current?.focus(), 300); }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/drawers");
+        const data = await res.json();
+        setDrawers(data.drawers ?? []);
+      } catch (e) { console.error("Failed to fetch drawer config", e); }
+    })();
+  }, []);
 
   function saveSession(customer: string, items: PackItem[]) {
     try {
@@ -197,6 +198,7 @@ export default function PackCheck() {
     setSelectValue(customer);
     selectValueRef.current = customer;
     setHistory([]); historyRef.current = [];
+    lastSpokenDrawerRef.current = null;
     setScanMsg({ text: "", tone: "" });
     setFulfillMsg(null);
     setFilter("all");
@@ -369,18 +371,26 @@ export default function PackCheck() {
       const spoken = m
         ? `${m[1].split("").join(" ")}, ${m[2].split("").join(" ")}`
         : nextItem.sku.split("").join(" ");
+
+      // Announce a drawer change before the SKU when the next item lives in
+      // a different drawer than the last one we called out.
+      const drawerNumber = resolveDrawerNumber(nextItem.sku, drawers);
+      const drawerChanged = drawerNumber !== null && drawerNumber !== lastSpokenDrawerRef.current;
+      if (drawerNumber !== null) lastSpokenDrawerRef.current = drawerNumber;
+      const utterance = drawerChanged ? `Change to drawer ${drawerNumber}. ${spoken}` : spoken;
+
       window.speechSynthesis.cancel();
       if (speechTimerRef.current) clearTimeout(speechTimerRef.current);
       // Chrome/Edge often clip the first syllable if speak() fires right after
       // cancel() — give the engine a beat to reset before queuing the utterance.
       speechTimerRef.current = setTimeout(() => {
-        const utter = new SpeechSynthesisUtterance(spoken);
+        const utter = new SpeechSynthesisUtterance(utterance);
         utter.rate = 0.95;
         utter.volume = 1;
         window.speechSynthesis.speak(utter);
       }, 150);
     } catch {}
-  }, [nextItem?.sku, muted]);
+  }, [nextItem?.sku, muted, drawers]);
 
   function handleScanChange(value: string) {
     setScanValue(value);

@@ -32,3 +32,14 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model DrawerRange {
+  id           String   @id @default(cuid())
+  shop         String
+  drawerNumber Int
+  startSku     String?
+  endSku       String?
+  updatedAt    DateTime @updatedAt
+
+  @@unique([shop, drawerNumber])
+}
