@@ -11,6 +11,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderBy: { drawerNumber: "asc" },
   });
 
+  console.log(`[drawers] GET shop=${session.shop} rows=${drawers.length} numbers=[${drawers.map((d) => d.drawerNumber).join(",")}]`);
+
   return Response.json({
     drawers: drawers.map((d) => ({
       drawerNumber: d.drawerNumber,
@@ -51,6 +53,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const submittedNumbers = new Set(cleaned.map((d) => d.drawerNumber));
     const toDeleteIds = existing.filter((e) => !submittedNumbers.has(e.drawerNumber)).map((e) => e.id);
 
+    console.log(
+      `[drawers] POST shop=${session.shop} existing=[${existing.map((e) => e.drawerNumber).join(",")}] ` +
+      `submitted=[${cleaned.map((d) => d.drawerNumber).join(",")}] deleting=[${existing.filter((e) => toDeleteIds.includes(e.id)).map((e) => e.drawerNumber).join(",")}]`,
+    );
+
     await db.$transaction([
       ...(toDeleteIds.length ? [db.drawerRange.deleteMany({ where: { id: { in: toDeleteIds } } })] : []),
       ...cleaned.map((d) =>
@@ -61,6 +68,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }),
       ),
     ]);
+
+    const after = await db.drawerRange.findMany({ where: { shop: session.shop } });
+    console.log(`[drawers] POST done shop=${session.shop} rows_after=${after.length} numbers=[${after.map((d) => d.drawerNumber).join(",")}]`);
 
     return Response.json({ success: true });
   } catch (error: any) {
