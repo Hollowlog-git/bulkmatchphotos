@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Page, Layout, Card, Button, TextField, InlineStack, BlockStack, Banner, Spinner, Badge } from "@shopify/polaris";
+import { Page, Layout, Card, Button, TextField, InlineStack, BlockStack, Banner, Spinner, Badge, Text } from "@shopify/polaris";
 
 interface NoteRecord {
   id: string;
@@ -219,6 +219,34 @@ export default function CustomerNotes() {
                 )}
               </BlockStack>
             )}
+          </Card>
+        </Layout.Section>
+
+        <Layout.Section variant="oneThird">
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h2" variant="headingSm">Customers with notes ({notes.length})</Text>
+              <div style={{ maxHeight: 560, overflowY: "auto" }}>
+                {notes.length === 0 ? (
+                  <div style={{ padding: 14, color: "#888", fontSize: 13 }}>No notes yet.</div>
+                ) : notes.map((n) => (
+                  <div
+                    key={n.id}
+                    onClick={() => selectEntry({ customerId: n.customerId, customerEmail: n.customerEmail, customerName: n.customerName, noteId: n.id, note: n.note })}
+                    style={{
+                      padding: "10px 12px", cursor: "pointer", borderRadius: 6,
+                      background: selected?.noteId === n.id ? "#f0f4ff" : "transparent",
+                      borderBottom: "1px solid #f0f0f0",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{n.customerName}</div>
+                    <div style={{ fontSize: 12, color: "#665200", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {n.note}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </BlockStack>
           </Card>
         </Layout.Section>
       </Layout>
