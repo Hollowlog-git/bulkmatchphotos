@@ -40,8 +40,9 @@ export default function CustomerNotes() {
         setNotes(notesData.notes ?? []);
         const seen = new Set<string>();
         const customers: { customerId: string | null; customerEmail: string | null; customer: string }[] = [];
-        // Open (unfulfilled) orders plus anyone who ordered in the last 5 days,
-        // regardless of fulfillment status, so recently-fulfilled customers are searchable too.
+        // Open (unfulfilled) orders plus anyone who ordered in the last 60 days
+        // (Shopify's standard order-history window), regardless of fulfillment
+        // status, so past customers are searchable too, not just open orders.
         const sources = [...(ordersData.orders ?? []), ...(recentData.customers ?? [])];
         for (const o of sources) {
           const key = o.customerId || o.customerEmail || o.customer;
@@ -51,7 +52,7 @@ export default function CustomerNotes() {
         }
         setOrderCustomers(customers);
         if (recentData.error) {
-          setMessage({ text: `Couldn't load the last 5 days of order history (showing only currently open orders): ${recentData.error}`, tone: "critical" });
+          setMessage({ text: `Couldn't load the last 60 days of order history (showing only currently open orders): ${recentData.error}`, tone: "critical" });
         }
       } catch (e) {
         console.error("Failed to load customer notes", e);
