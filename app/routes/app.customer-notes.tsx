@@ -31,13 +31,19 @@ export default function CustomerNotes() {
   useEffect(() => {
     (async () => {
       try {
-        const [notesRes, ordersRes] = await Promise.all([fetch("/api/customer-notes"), fetch("/api/orders")]);
+        const [notesRes, ordersRes, recentRes] = await Promise.all([
+          fetch("/api/customer-notes"), fetch("/api/orders"), fetch("/api/recent-customers"),
+        ]);
         const notesData = await notesRes.json();
         const ordersData = await ordersRes.json();
+        const recentData = await recentRes.json();
         setNotes(notesData.notes ?? []);
         const seen = new Set<string>();
         const customers: { customerId: string | null; customerEmail: string | null; customer: string }[] = [];
-        for (const o of ordersData.orders ?? []) {
+        // Open (unfulfilled) orders plus anyone who ordered in the last 5 days,
+        // regardless of fulfillment status, so recently-fulfilled customers are searchable too.
+        const sources = [...(ordersData.orders ?? []), ...(recentData.customers ?? [])];
+        for (const o of sources) {
           const key = o.customerId || o.customerEmail || o.customer;
           if (!key || seen.has(key)) continue;
           seen.add(key);
