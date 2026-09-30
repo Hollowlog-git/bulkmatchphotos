@@ -4,6 +4,7 @@ import {
   Badge, ProgressBar, Divider, InlineStack, BlockStack, Box, EmptyState, Spinner,
 } from "@shopify/polaris";
 import { normaliseSku, skuSortKey, resolveDrawerNumber, type DrawerRangeConfig } from "../lib/sku";
+import { findCustomerNote, type CustomerNoteRecord } from "../lib/customerNotes";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -92,6 +93,7 @@ export default function PackCheck() {
     try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
   });
   const [drawers, setDrawers] = useState<DrawerRangeConfig[]>([]);
+  const [customerNotes, setCustomerNotes] = useState<CustomerNoteRecord[]>([]);
   const scanRef = useRef<HTMLInputElement>(null);
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const packItemsRef = useRef<PackItem[]>([]);
@@ -114,6 +116,15 @@ export default function PackCheck() {
         const data = await res.json();
         setDrawers(data.drawers ?? []);
       } catch (e) { console.error("Failed to fetch drawer config", e); }
+    })();
+  }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/customer-notes");
+        const data = await res.json();
+        setCustomerNotes(data.notes ?? []);
+      } catch (e) { console.error("Failed to fetch customer notes", e); }
     })();
   }, []);
 
@@ -321,6 +332,12 @@ export default function PackCheck() {
   const orderNotes = selectedOrders
     .filter(o => o.note && o.note.trim())
     .map(o => ({ orderName: o.name, note: o.note as string }));
+  const activeCustomerNote = selectedOrders[0]
+    ? findCustomerNote(
+        { customerId: selectedOrders[0].customerId, customerEmail: selectedOrders[0].customerEmail, customer: selectedOrders[0].customer },
+        customerNotes,
+      )
+    : null;
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
@@ -509,6 +526,21 @@ export default function PackCheck() {
   return (
     <Page>
       <Layout>
+
+        {/* ── CUSTOMER NOTE ── */}
+        {activeCustomerNote && (
+          <Layout.Section>
+            <div style={{ background: "#ff6a00", borderRadius: 10, padding: "14px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 26 }}>📌</span>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Note for {activeCustomerNote.customerName}
+                </div>
+                <div style={{ color: "#fff", fontWeight: 700, fontSize: 18 }}>{activeCustomerNote.note}</div>
+              </div>
+            </div>
+          </Layout.Section>
+        )}
 
         <Layout.Section>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>

@@ -43,3 +43,16 @@ model DrawerRange {
 
   @@unique([shop, drawerNumber])
 }
+
+model CustomerNote {
+  id            String   @id @default(cuid())
+  shop          String
+  customerId    String?
+  customerEmail String?
+  customerName  String
+  note          String
+  updatedAt     DateTime @updatedAt
+
+  @@index([shop, customerId])
+  @@index([shop, customerEmail])
+}
