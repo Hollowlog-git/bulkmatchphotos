@@ -6,8 +6,14 @@ import fs from 'node:fs'
 
 const env = { ...process.env }
 
-// place Sqlite3 database on volume
-const source = path.resolve('/dev.sqlite')
+// place Sqlite3 database on volume.
+// Prisma resolves a relative sqlite "file:" URL against the directory that
+// contains schema.prisma (prisma/), not the process's cwd or filesystem
+// root — so the real database file lives at prisma/dev.sqlite, not
+// /dev.sqlite. Symlinking the wrong path meant this never actually pointed
+// at the persistent volume, so every deploy silently started from a fresh,
+// empty database.
+const source = path.resolve('prisma/dev.sqlite')
 const target = '/data/' + path.basename(source)
 console.log(`[dbsetup] source=${source} target=${target} dataDirExists=${fs.existsSync('/data')} sourceExistsBefore=${fs.existsSync(source)} targetExistsBefore=${fs.existsSync(target)}`)
 if (!fs.existsSync(source) && fs.existsSync('/data')) fs.symlinkSync(target, source)
