@@ -94,6 +94,10 @@ export default function PackCheck() {
   });
   const [drawers, setDrawers] = useState<DrawerRangeConfig[]>([]);
   const [customerNotes, setCustomerNotes] = useState<CustomerNoteRecord[]>([]);
+  const [noteFormOpen, setNoteFormOpen] = useState(false);
+  const [noteFormText, setNoteFormText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [archivingNote, setArchivingNote] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const autoConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const packItemsRef = useRef<PackItem[]>([]);
@@ -210,6 +214,8 @@ export default function PackCheck() {
     selectValueRef.current = customer;
     setHistory([]); historyRef.current = [];
     lastSpokenDrawerRef.current = null;
+    setNoteFormOpen(false);
+    setNoteFormText("");
     setScanMsg({ text: "", tone: "" });
     setFulfillMsg(null);
     setFilter("all");
@@ -338,6 +344,59 @@ export default function PackCheck() {
         customerNotes,
       )
     : null;
+
+  function openNoteForm() {
+    setNoteFormText(activeCustomerNote?.note ?? "");
+    setNoteFormOpen(true);
+  }
+
+  async function saveCustomerNote() {
+    const order = selectedOrders[0];
+    if (!order || !noteFormText.trim()) return;
+    setSavingNote(true);
+    try {
+      const res = await fetch("/api/customer-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: activeCustomerNote?.id,
+          customerId: order.customerId,
+          customerEmail: order.customerEmail,
+          customerName: order.customer,
+          note: noteFormText.trim(),
+        }),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      const refreshed = await (await fetch("/api/customer-notes")).json();
+      setCustomerNotes(refreshed.notes ?? []);
+      setNoteFormOpen(false);
+    } catch (e) {
+      console.error("Failed to save customer note", e);
+      setScanMsg({ text: "Failed to save customer note.", tone: "critical" });
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  async function archiveCustomerNote() {
+    if (!activeCustomerNote) return;
+    setArchivingNote(true);
+    try {
+      const res = await fetch("/api/customer-notes", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: activeCustomerNote.id }),
+      });
+      if (!res.ok) throw new Error("Archive failed");
+      setCustomerNotes(ns => ns.filter(n => n.id !== activeCustomerNote.id));
+    } catch (e) {
+      console.error("Failed to archive customer note", e);
+      setScanMsg({ text: "Failed to archive customer note.", tone: "critical" });
+    } finally {
+      setArchivingNote(false);
+    }
+  }
+
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
@@ -530,14 +589,17 @@ export default function PackCheck() {
         {/* ── CUSTOMER NOTE ── */}
         {activeCustomerNote && (
           <Layout.Section>
-            <div style={{ background: "#ff6a00", borderRadius: 10, padding: "14px 20px", display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 26 }}>📌</span>
-              <div>
-                <div style={{ color: "#fff", fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5 }}>
-                  Note for {activeCustomerNote.customerName}
+            <div style={{ background: "#ff6a00", borderRadius: 10, padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ fontSize: 26 }}>📌</span>
+                <div>
+                  <div style={{ color: "#fff", fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                    Note for {activeCustomerNote.customerName}
+                  </div>
+                  <div style={{ color: "#fff", fontWeight: 700, fontSize: 18 }}>{activeCustomerNote.note}</div>
                 </div>
-                <div style={{ color: "#fff", fontWeight: 700, fontSize: 18 }}>{activeCustomerNote.note}</div>
               </div>
+              <Button onClick={archiveCustomerNote} loading={archivingNote}>Archive note</Button>
             </div>
           </Layout.Section>
         )}
@@ -756,11 +818,28 @@ export default function PackCheck() {
                         })}
                       </InlineStack>
 
-                      {customerEmail && (
-                        <a href={`https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(customerEmail)}&su=${encodeURIComponent("Your order from Hollowlog Cards")}`} target="_blank" rel="noopener noreferrer"
-                          style={{ fontSize: 13, color: "#2563eb", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                          ✉️ {customerEmail}
-                        </a>
+                      {selectedOrders[0] && (
+                        <InlineStack gap="300" blockAlign="center" wrap>
+                          {customerEmail && (
+                            <a href={`https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(customerEmail)}&su=${encodeURIComponent("Your order from Hollowlog Cards")}`} target="_blank" rel="noopener noreferrer"
+                              style={{ fontSize: 13, color: "#2563eb", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                              ✉️ {customerEmail}
+                            </a>
+                          )}
+                          <Button size="slim" onClick={openNoteForm}>{activeCustomerNote ? "✏️ Edit note" : "+ Add note"}</Button>
+                        </InlineStack>
+                      )}
+
+                      {noteFormOpen && (
+                        <div style={{ background: "#fff7ed", border: "1px solid #ffb066", borderRadius: 6, padding: 10 }}>
+                          <BlockStack gap="200">
+                            <TextField label="" labelHidden multiline={2} autoComplete="off" value={noteFormText} onChange={setNoteFormText} placeholder="Note for this customer…" />
+                            <InlineStack gap="200">
+                              <Button variant="primary" size="slim" onClick={saveCustomerNote} loading={savingNote}>Save note</Button>
+                              <Button size="slim" onClick={() => setNoteFormOpen(false)}>Cancel</Button>
+                            </InlineStack>
+                          </BlockStack>
+                        </div>
                       )}
 
                       {orderNotes.length > 0 && (

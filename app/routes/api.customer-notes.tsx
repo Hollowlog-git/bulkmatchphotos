@@ -6,7 +6,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
   const notes = await db.customerNote.findMany({
-    where: { shop: session.shop },
+    where: { shop: session.shop, archived: false },
     orderBy: { updatedAt: "desc" },
   });
 
@@ -30,6 +30,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const { id } = await request.json();
       if (!id) return Response.json({ error: "id is required" }, { status: 400 });
       await db.customerNote.deleteMany({ where: { id, shop: session.shop } });
+      return Response.json({ success: true });
+    }
+
+    // Archive keeps the row (unlike DELETE) — just hides it from the active
+    // banner and search directory, so it can't accidentally be dropped for good.
+    if (request.method === "PATCH") {
+      const { id } = await request.json();
+      if (!id) return Response.json({ error: "id is required" }, { status: 400 });
+      await db.customerNote.updateMany({ where: { id, shop: session.shop }, data: { archived: true } });
       return Response.json({ success: true });
     }
 

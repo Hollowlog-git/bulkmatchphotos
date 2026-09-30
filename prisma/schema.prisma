@@ -51,6 +51,7 @@ model CustomerNote {
   customerEmail String?
   customerName  String
   note          String
+  archived      Boolean  @default(false)
   updatedAt     DateTime @updatedAt
 
   @@index([shop, customerId])
