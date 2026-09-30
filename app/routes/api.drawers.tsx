@@ -37,16 +37,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }))
       .filter((d) => Number.isInteger(d.drawerNumber) && d.drawerNumber > 0);
 
+    if (!cleaned.length) {
+      return Response.json(
+        { error: "Add at least one drawer before saving — an empty save is refused so it can't wipe your existing config." },
+        { status: 400 },
+      );
+    }
+
+    // Differential upsert rather than delete-all-then-recreate: a save can
+    // only ever remove the specific drawer numbers it explicitly submitted,
+    // never wipe rows it didn't see (e.g. from a stale or partial load).
+    const existing = await db.drawerRange.findMany({ where: { shop: session.shop } });
+    const submittedNumbers = new Set(cleaned.map((d) => d.drawerNumber));
+    const toDeleteIds = existing.filter((e) => !submittedNumbers.has(e.drawerNumber)).map((e) => e.id);
+
     await db.$transaction([
-      db.drawerRange.deleteMany({ where: { shop: session.shop } }),
+      ...(toDeleteIds.length ? [db.drawerRange.deleteMany({ where: { id: { in: toDeleteIds } } })] : []),
       ...cleaned.map((d) =>
-        db.drawerRange.create({
-          data: {
-            shop: session.shop,
-            drawerNumber: d.drawerNumber,
-            startSku: d.startSku,
-            endSku: d.endSku,
-          },
+        db.drawerRange.upsert({
+          where: { shop_drawerNumber: { shop: session.shop, drawerNumber: d.drawerNumber } },
+          create: { shop: session.shop, drawerNumber: d.drawerNumber, startSku: d.startSku, endSku: d.endSku },
+          update: { startSku: d.startSku, endSku: d.endSku },
         }),
       ),
     ]);

@@ -11,28 +11,33 @@ interface DrawerRow {
 export default function Drawers() {
   const [rows, setRows] = useState<DrawerRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ text: string; tone: "success" | "critical" } | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/drawers");
-        const data = await res.json();
-        const loaded: DrawerRow[] = (data.drawers ?? []).map((d: any) => ({
-          drawerNumber: d.drawerNumber,
-          startSku: d.startSku ?? "",
-          endSku: d.endSku ?? "",
-        }));
-        setRows(loaded.length ? loaded : [{ drawerNumber: 1, startSku: "", endSku: "" }]);
-      } catch (e) {
-        console.error("Failed to load drawer config", e);
-        setMessage({ text: "Failed to load drawer config.", tone: "critical" });
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
+  async function load() {
+    setLoading(true);
+    setLoadFailed(false);
+    try {
+      const res = await fetch("/api/drawers");
+      if (!res.ok) throw new Error("Request failed");
+      const data = await res.json();
+      const loaded: DrawerRow[] = (data.drawers ?? []).map((d: any) => ({
+        drawerNumber: d.drawerNumber,
+        startSku: d.startSku ?? "",
+        endSku: d.endSku ?? "",
+      }));
+      setRows(loaded.length ? loaded : [{ drawerNumber: 1, startSku: "", endSku: "" }]);
+    } catch (e) {
+      console.error("Failed to load drawer config", e);
+      setLoadFailed(true);
+      setMessage({ text: "Failed to load drawer config — showing Save would risk overwriting it, so it's disabled until this loads. Try Retry below.", tone: "critical" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, []);
 
   function updateRow(idx: number, patch: Partial<DrawerRow>) {
     setRows(rs => rs.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -86,6 +91,8 @@ export default function Drawers() {
           <Card>
             {loading ? (
               <InlineStack align="center"><Spinner size="small" /></InlineStack>
+            ) : loadFailed ? (
+              <InlineStack align="center"><Button onClick={load}>Retry</Button></InlineStack>
             ) : (
               <BlockStack gap="400">
                 <Text as="p" variant="bodyMd" tone="subdued">
