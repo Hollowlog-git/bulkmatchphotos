@@ -1,24 +1,19 @@
 #!/usr/bin/env node
 
 import { spawn } from 'node:child_process'
-import path from 'node:path'
 import fs from 'node:fs'
 
 const env = { ...process.env }
 
-// place Sqlite3 database on volume.
-// Prisma resolves a relative sqlite "file:" URL against the directory that
-// contains schema.prisma (prisma/), not the process's cwd or filesystem
-// root — so the real database file lives at prisma/dev.sqlite, not
-// /dev.sqlite. Symlinking the wrong path meant this never actually pointed
-// at the persistent volume, so every deploy silently started from a fresh,
-// empty database.
-const source = path.resolve('prisma/dev.sqlite')
-const target = '/data/' + path.basename(source)
-console.log(`[dbsetup] source=${source} target=${target} dataDirExists=${fs.existsSync('/data')} sourceExistsBefore=${fs.existsSync(source)} targetExistsBefore=${fs.existsSync(target)}`)
-if (!fs.existsSync(source) && fs.existsSync('/data')) fs.symlinkSync(target, source)
+// The database lives directly on the persistent volume at an absolute path
+// (DATABASE_URL=file:/data/dev.sqlite, set in fly.toml) — no symlink
+// indirection. An earlier symlink-based approach (pointing a relative
+// "file:" path at the volume) proved unreliable: Prisma appears to
+// delete-and-recreate the sqlite file rather than write through a dangling
+// symlink, silently detaching it from the volume on every deploy.
+const target = '/data/dev.sqlite'
 const newDb = !fs.existsSync(target)
-console.log(`[dbsetup] newDb=${newDb} BUCKET_NAME=${process.env.BUCKET_NAME ? 'set' : 'unset'}`)
+console.log(`[dbsetup] target=${target} dataDirExists=${fs.existsSync('/data')} newDb=${newDb} BUCKET_NAME=${process.env.BUCKET_NAME ? 'set' : 'unset'}`)
 if (newDb && process.env.BUCKET_NAME) {
   console.log('[dbsetup] running litestream restore (newDb=true)')
   await exec(`npx litestream restore -config litestream.yml -if-replica-exists ${target}`)

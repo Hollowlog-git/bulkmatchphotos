@@ -13,6 +13,11 @@ primary_region = 'syd'
   PORT = '3000'
   SCOPES = 'write_products'
   SHOPIFY_APP_URL = 'https://bulk-photo-match2.fly.dev'
+  # Absolute path on the persistent volume — avoids relying on Prisma's
+  # relative "file:" path resolution (which resolves against the
+  # schema.prisma directory, not cwd or root) ever silently pointing at
+  # ephemeral container storage again.
+  DATABASE_URL = 'file:/data/dev.sqlite'
 
 [processes]
   app = "npm run docker-start"
