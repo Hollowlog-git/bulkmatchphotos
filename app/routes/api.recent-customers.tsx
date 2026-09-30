@@ -29,7 +29,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     `);
 
-    const data = await response.json();
+    const data: any = await response.json();
+    if (data?.errors) {
+      console.error("Recent customers GraphQL errors:", JSON.stringify(data.errors));
+      return Response.json({ customers: [], error: data.errors.map((e: any) => e.message).join(", ") });
+    }
     const edges = data?.data?.orders?.edges ?? [];
 
     const seen = new Map<string, { customerId: string | null; customerEmail: string | null; customer: string }>();
@@ -46,8 +50,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
 
     return Response.json({ customers: [...seen.values()] });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Failed to fetch recent customers:", error);
-    return Response.json({ customers: [] });
+    return Response.json({ customers: [], error: error.message ?? "Unknown error" });
   }
 };

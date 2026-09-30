@@ -50,6 +50,9 @@ export default function CustomerNotes() {
           customers.push({ customerId: o.customerId ?? null, customerEmail: o.customerEmail ?? null, customer: o.customer });
         }
         setOrderCustomers(customers);
+        if (recentData.error) {
+          setMessage({ text: `Couldn't load the last 5 days of order history (showing only currently open orders): ${recentData.error}`, tone: "critical" });
+        }
       } catch (e) {
         console.error("Failed to load customer notes", e);
         setMessage({ text: "Failed to load customer notes.", tone: "critical" });
