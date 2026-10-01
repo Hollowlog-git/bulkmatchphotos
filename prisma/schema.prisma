@@ -57,3 +57,50 @@ model CustomerNote {
   @@index([shop, customerId])
   @@index([shop, customerEmail])
 }
+
+// Mirrors "ready to pack" parcels pushed from the local Trade Me ops app.
+// This app never talks to Trade Me directly — the local app computes
+// eligibility (payment, shipping, holds) itself and pushes the result here.
+// A full-snapshot push replaces whatever was stored for a shop: any
+// groupKey not present in the latest push is removed, so retracted orders
+// (refunded, held, cancelled after the fact) disappear automatically.
+model TradeMeJob {
+  id                String   @id @default(cuid())
+  shop              String
+  groupKey          String
+  buyerUsername     String?
+  buyerMemberId     String?
+  buyerName         String?
+  buyerEmail        String?
+  deliveryAddress   String?
+  fulfilmentChannel String // "trademe" | "mixed"
+  readiness         String?
+  kanbanCol         String?
+  itemCount         Int      @default(0)
+  totalSale         Float    @default(0)
+  shippingPaid      Float    @default(0)
+  paidTotal         Float?
+  lastSyncedAt      DateTime @updatedAt
+  items             TradeMeJobItem[]
+
+  @@unique([shop, groupKey])
+  @@index([shop, buyerEmail])
+}
+
+model TradeMeJobItem {
+  id            String     @id @default(cuid())
+  job           TradeMeJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobId         String
+  purchaseId    String     @unique
+  listingId     String?
+  sku           String?
+  title         String?
+  quantity      Int        @default(1)
+  salePrice     Float      @default(0)
+  shippingPrice Float      @default(0)
+  soldDate      String?
+  saleChannel   String? // "store" | "auction" | "fpo"
+  packed        Boolean    @default(false)
+
+  @@index([jobId])
+}

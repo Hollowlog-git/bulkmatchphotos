@@ -18,6 +18,11 @@ primary_region = 'syd'
   # schema.prisma directory, not cwd or root) ever silently pointing at
   # ephemeral container storage again.
   DATABASE_URL = 'file:/data/dev.sqlite'
+  # Used to scope Trade Me sync rows — not a secret, just an identifier.
+  # TRADEME_SYNC_SECRET (the actual auth credential for /api/trademe-sync)
+  # must NOT go here — this file is committed to git. Set it with:
+  #   fly secrets set TRADEME_SYNC_SECRET=<value> -a bulk-photo-match2
+  SHOP_DOMAIN = 'xnbtjk-im.myshopify.com'
 
 [processes]
   app = "npm run docker-start"
