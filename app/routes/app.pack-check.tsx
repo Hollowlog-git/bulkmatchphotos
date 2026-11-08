@@ -25,6 +25,9 @@ interface Order {
   shippingWasFree: boolean; hasShippingDiscount: boolean; currencyCode: string;
   discountCodes: string[]; shippingAddress: ShippingAddress | null;
   fulfillmentOrders: FulfillmentOrder[]; lineItems: LineItem[];
+  // Only set on Trade Me jobs synced from the local app (/api/trademe-jobs).
+  deliveryAddressText?: string | null;
+  tradeMe?: { groupKey: string; fulfilmentChannel: string; buyerUsername: string | null; purchaseIds: string[] };
 }
 interface PackItem extends LineItem {
   scanned: number; sortKey: string; orderNames: string[];
@@ -92,6 +95,13 @@ export default function PackCheck() {
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
   });
+  // Off by default: Trade Me sales may already reach Shopify as orders via the
+  // Trade Me sales channel, and showing both would double them up.
+  const [includeTradeMe, setIncludeTradeMe] = useState(() => {
+    try { return localStorage.getItem("packcheck_trademe") === "1"; } catch { return false; }
+  });
+  const includeTradeMeRef = useRef(includeTradeMe);
+  const [tradeMeError, setTradeMeError] = useState<string | null>(null);
   const [drawers, setDrawers] = useState<DrawerRangeConfig[]>([]);
   const [customerNotes, setCustomerNotes] = useState<CustomerNoteRecord[]>([]);
   const [noteFormOpen, setNoteFormOpen] = useState(false);
@@ -155,7 +165,19 @@ export default function PackCheck() {
     try {
       const res = await fetch("/api/orders");
       const data = await res.json();
-      const fetched: Order[] = data.orders ?? [];
+      let fetched: Order[] = data.orders ?? [];
+      setTradeMeError(null);
+      if (includeTradeMeRef.current) {
+        try {
+          const tmRes = await fetch("/api/trademe-jobs");
+          if (!tmRes.ok) throw new Error(`HTTP ${tmRes.status}`);
+          const tmData = await tmRes.json();
+          fetched = [...fetched, ...(tmData.orders ?? [])];
+        } catch (e: any) {
+          console.error("Failed to fetch Trade Me jobs", e);
+          setTradeMeError(`Couldn't load Trade Me jobs (${e.message}). Showing Shopify orders only.`);
+        }
+      }
       setOrders(fetched);
       ordersRef.current = fetched;
       if (fetched.length > 0) {
@@ -182,6 +204,14 @@ export default function PackCheck() {
   }, []);
 
   useEffect(() => { fetchOrders(); }, [fetchOrders]);
+
+  function toggleTradeMe() {
+    const next = !includeTradeMeRef.current;
+    includeTradeMeRef.current = next;
+    setIncludeTradeMe(next);
+    try { localStorage.setItem("packcheck_trademe", next ? "1" : "0"); } catch {}
+    fetchOrders(false);
+  }
 
   function moveToNextOrder() {
     const allOrders = ordersRef.current;
@@ -254,21 +284,41 @@ export default function PackCheck() {
 
   // ── FULFILLMENT ───────────────────────────────────────────────────────────
   async function fulfillOrders() {
-    const orderIds = selectedOrders.map(o => o.id);
-    if (!orderIds.length) { setFulfillMsg({ text: "No orders selected.", ok: false }); return; }
+    // Trade Me jobs never go to Shopify — they're recorded as packed here and
+    // the local Trade Me app picks that up on its next read.
+    const orderIds = selectedOrders.filter(o => !o.tradeMe).map(o => o.id);
+    const tmPurchases = selectedOrders.flatMap(o =>
+      o.tradeMe ? o.tradeMe.purchaseIds.map(purchaseId => ({ purchaseId, groupKey: o.tradeMe!.groupKey })) : []);
+    if (!orderIds.length && !tmPurchases.length) { setFulfillMsg({ text: "No orders selected.", ok: false }); return; }
     setFulfilling(true);
     setFulfillMsg(null);
     try {
-      const res = await fetch("/api/fulfill", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orderIds }),
-      });
-      const data = await res.json();
+      const done: string[] = [];
+      if (tmPurchases.length) {
+        const tmRes = await fetch("/api/trademe-jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ purchases: tmPurchases }),
+        });
+        const tmData = await tmRes.json();
+        if (tmData.error) { setFulfillMsg({ text: `❌ Trade Me: ${tmData.error}`, ok: false }); return; }
+        done.push("Trade Me items marked packed");
+      }
+      let data: any = {};
+      if (orderIds.length) {
+        const res = await fetch("/api/fulfill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orderIds }),
+        });
+        data = await res.json();
+        if (!data.error) done.push("Shopify orders fulfilled");
+      }
       if (data.error) {
-        setFulfillMsg({ text: `❌ ${data.error}`, ok: false });
+        setFulfillMsg({ text: `❌ ${done.length ? done.join(", ") + ", but Shopify failed: " : ""}${data.error}`, ok: false });
+        if (done.length) setTimeout(() => fetchOrders(false), 2000);
       } else {
-        setFulfillMsg({ text: "✅ Fulfilled! Customer notified.", ok: true });
+        setFulfillMsg({ text: `✅ ${done.join(" · ")}`, ok: true });
         clearSession();
         setTimeout(() => fetchOrders(false), 2000);
       }
@@ -400,7 +450,9 @@ export default function PackCheck() {
   const currencyCode = selectedOrders[0]?.currencyCode ?? "NZD";
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
-  const hasSignature = selectedOrders.some(isSignatureShipping);
+  const hasSignature = selectedOrders.some(o => !o.tradeMe && isSignatureShipping(o));
+  const tradeMeAddress = !shippingAddress ? selectedOrders.find(o => o.deliveryAddressText)?.deliveryAddressText ?? null : null;
+  const onlyTradeMe = selectedOrders.length > 0 && selectedOrders.every(o => o.tradeMe);
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
@@ -635,11 +687,20 @@ export default function PackCheck() {
                   {totalUnfulfilledCount} unfulfilled
                 </div>
               )}
+              <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "Trade Me jobs: on" : "Trade Me jobs: off"}</Button>
               <Button onClick={() => setMuted(m => !m)}>{muted ? "🔇 Muted" : "🔊 Sound on"}</Button>
               <Button onClick={() => fetchOrders(false)} loading={loadingOrders}>Refresh</Button>
             </InlineStack>
           </div>
         </Layout.Section>
+
+        {tradeMeError && (
+          <Layout.Section>
+            <div style={{ background: "#fff3cd", border: "1px solid #f0c040", borderRadius: 8, padding: "10px 16px", color: "#856404", fontWeight: 700 }}>
+              ⚠️ {tradeMeError}
+            </div>
+          </Layout.Section>
+        )}
 
         {/* ── SIGNATURE REQUIRED ── */}
         {hasSignature && (
@@ -701,7 +762,7 @@ export default function PackCheck() {
                     loading={fulfilling}
                     onClick={fulfillOrders}
                   >
-                    🚚 Mark as Fulfilled & Notify Customer
+                    {onlyTradeMe ? "📦 Mark Trade Me job as packed" : "🚚 Mark as Fulfilled & Notify Customer"}
                   </Button>
                   <Button size="large" onClick={moveToNextOrder}>Next Order →</Button>
                 </InlineStack>
@@ -851,6 +912,13 @@ export default function PackCheck() {
                               {n.note}
                             </div>
                           ))}
+                        </div>
+                      )}
+
+                      {tradeMeAddress && (
+                        <div style={{ background: "#f8f8f8", borderRadius: 6, padding: "10px 12px", fontSize: 13 }}>
+                          <div style={{ fontWeight: 700, color: "#333", marginBottom: 4 }}>📦 Ship to (Trade Me):</div>
+                          <div style={{ color: "#555", lineHeight: 1.6, whiteSpace: "pre-line" }}>{tradeMeAddress}</div>
                         </div>
                       )}
 

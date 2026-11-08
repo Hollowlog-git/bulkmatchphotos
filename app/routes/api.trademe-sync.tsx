@@ -1,4 +1,4 @@
-import type { ActionFunctionArgs } from "@react-router/node";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node";
 import crypto from "node:crypto";
 import db from "../db.server";
 
@@ -58,7 +58,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   try {
     const body: any = await request.json();
-    const jobs: IncomingJob[] = Array.isArray(body?.jobs) ? body.jobs : [];
+    if (!Array.isArray(body?.jobs)) {
+      return Response.json({ error: "Body must be { jobs: [...] }" }, { status: 400 });
+    }
+    const jobs: IncomingJob[] = body.jobs;
+
+    // An empty snapshot deletes every stored job. That is legitimate when
+    // nothing is ready to pack, but it is also what a bug or a failed read in
+    // the local app looks like — so require the caller to say it means it.
+    if (jobs.length === 0 && body?.allowEmpty !== true) {
+      return Response.json(
+        { error: "Refusing empty snapshot (it would remove every job). Send allowEmpty: true if nothing is ready to pack." },
+        { status: 400 },
+      );
+    }
 
     for (const job of jobs) {
       if (!job || typeof job.groupKey !== "string" || !job.groupKey.trim()) {
@@ -176,4 +189,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     console.error("[trademe-sync] Failed to process sync:", error);
     return Response.json({ error: error.message ?? "Unknown error" }, { status: 500 });
   }
+};
+
+// GET: the local app reads back what Pack Check has marked packed, so it can
+// mark those purchases packed/dispatched on its side. Optional ?since=<ISO>
+// returns only items packed after that time. Records older than 30 days are
+// pruned here, by which point the local app has long since processed them.
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  if (!authorised(request)) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const shop = process.env.SHOP_DOMAIN;
+  if (!shop) {
+    return Response.json({ error: "Server misconfigured: SHOP_DOMAIN not set" }, { status: 500 });
+  }
+
+  const sinceRaw = new URL(request.url).searchParams.get("since");
+  const since = sinceRaw ? new Date(sinceRaw) : null;
+  if (since && Number.isNaN(since.getTime())) {
+    return Response.json({ error: "since must be an ISO date" }, { status: 400 });
+  }
+
+  await db.tradeMePackedItem.deleteMany({
+    where: { shop, packedAt: { lt: new Date(Date.now() - 30 * 86400000) } },
+  });
+
+  const packed = await db.tradeMePackedItem.findMany({
+    where: { shop, ...(since ? { packedAt: { gt: since } } : {}) },
+    orderBy: { packedAt: "asc" },
+  });
+
+  return Response.json({
+    packed: packed.map((p) => ({ purchaseId: p.purchaseId, groupKey: p.groupKey, packedAt: p.packedAt.toISOString() })),
+  });
 };
