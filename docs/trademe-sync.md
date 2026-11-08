@@ -100,7 +100,7 @@ ready. If the read fails, skip the push.
 
 ## In Pack Check
 
-Trade Me jobs only appear when **"Trade Me jobs: on"** is toggled in the top
-bar. It's off by default, because Trade Me sales may also reach Shopify as
+Trade Me jobs only appear when the **"Clearance week"** toggle in the top
+bar is on. It's off by default, because Trade Me sales may also reach Shopify as
 orders through the Trade Me sales channel and would then show twice.
 Packing a Trade Me job records its items as packed. It never touches Shopify.

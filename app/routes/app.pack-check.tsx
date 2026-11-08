@@ -95,6 +95,7 @@ export default function PackCheck() {
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
   });
+  // "Clearance week" toggle: pulls in Trade Me jobs synced from the local app.
   // Off by default: Trade Me sales may already reach Shopify as orders via the
   // Trade Me sales channel, and showing both would double them up.
   const [includeTradeMe, setIncludeTradeMe] = useState(() => {
@@ -687,8 +688,17 @@ export default function PackCheck() {
                   {totalUnfulfilledCount} unfulfilled
                 </div>
               )}
-              <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "Trade Me jobs: on" : "Trade Me jobs: off"}</Button>
-              <Button onClick={() => setMuted(m => !m)}>{muted ? "🔇 Muted" : "🔊 Sound on"}</Button>
+              <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
+              <button
+                type="button"
+                onClick={() => setMuted(m => !m)}
+                title={muted ? "Sound off — click to unmute" : "Sound on — click to mute"}
+                aria-label={muted ? "Unmute" : "Mute"}
+                aria-pressed={muted}
+                style={{ width: 32, height: 32, padding: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 16, lineHeight: 1, background: "#fff", border: "1px solid #c9cccf", borderRadius: 8, cursor: "pointer", boxShadow: "0 1px 0 rgba(0,0,0,0.05)" }}
+              >
+                {muted ? "🔇" : "🔊"}
+              </button>
               <Button onClick={() => fetchOrders(false)} loading={loadingOrders}>Refresh</Button>
             </InlineStack>
           </div>
