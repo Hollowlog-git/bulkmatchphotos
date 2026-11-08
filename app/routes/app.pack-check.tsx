@@ -913,6 +913,27 @@ export default function PackCheck() {
                         </div>
                       )}
 
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: "#f0f4ff", border: "2px solid #2563eb" }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: "#2563eb" }}>💰 Order value</div>
+                        <div style={{ fontWeight: 700, fontSize: 20, color: "#2563eb" }}>
+                          {fmt(totalOrderValue, currencyCode)}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: totalShipping === 0 ? "#fff0f0" : "#f0fff4", border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}` }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 14, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
+                            {totalShipping === 0 ? "❌ No shipping paid" : "✓ Shipping paid"}
+                          </div>
+                          <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
+                            {selectedOrders.map(o => o.shippingTitle).filter((v, i, a) => a.indexOf(v) === i).join(", ")}
+                          </div>
+                        </div>
+                        <div style={{ fontWeight: 700, fontSize: 20, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
+                          {fmt(totalShipping, currencyCode)}
+                        </div>
+                      </div>
+
                       {orderNotes.length > 0 && (
                         <div style={{ background: "#fff3b0", border: "1px solid #e6c200", borderRadius: 6, padding: "10px 12px", fontSize: 13 }}>
                           <div style={{ fontWeight: 700, color: "#665200", marginBottom: 4 }}>📝 Order note{orderNotes.length > 1 ? "s" : ""}</div>
@@ -951,26 +972,6 @@ export default function PackCheck() {
                         </div>
                       )}
 
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: "#f0f4ff", border: "2px solid #2563eb" }}>
-                        <div style={{ fontWeight: 700, fontSize: 14, color: "#2563eb" }}>💰 Order value</div>
-                        <div style={{ fontWeight: 700, fontSize: 20, color: "#2563eb" }}>
-                          {fmt(totalOrderValue, currencyCode)}
-                        </div>
-                      </div>
-
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: totalShipping === 0 ? "#fff0f0" : "#f0fff4", border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}` }}>
-                        <div>
-                          <div style={{ fontWeight: 700, fontSize: 14, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
-                            {totalShipping === 0 ? "❌ No shipping paid" : "✓ Shipping paid"}
-                          </div>
-                          <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                            {selectedOrders.map(o => o.shippingTitle).filter((v, i, a) => a.indexOf(v) === i).join(", ")}
-                          </div>
-                        </div>
-                        <div style={{ fontWeight: 700, fontSize: 20, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
-                          {fmt(totalShipping, currencyCode)}
-                        </div>
-                      </div>
                     </BlockStack>
                   ) : (
                     <Text as="p" tone="subdued">Select an order above to see details.</Text>
