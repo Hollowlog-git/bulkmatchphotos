@@ -104,3 +104,19 @@ model TradeMeJobItem {
 
   @@index([jobId])
 }
+
+// Items marked packed in Pack Check. Kept separate from TradeMeJobItem on
+// purpose: the sync replaces that table wholesale from the local app's
+// snapshot, which would overwrite any packed flag set here. The local app
+// reads these back (GET /api/trademe-sync) and marks the purchases packed /
+// dispatched on its side, after which it stops pushing them.
+model TradeMePackedItem {
+  id         String   @id @default(cuid())
+  shop       String
+  purchaseId String
+  groupKey   String
+  packedAt   DateTime @default(now())
+
+  @@unique([shop, purchaseId])
+  @@index([shop, packedAt])
+}
