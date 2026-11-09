@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node";
 import crypto from "node:crypto";
 import db from "../db.server";
+import { sanitiseTradeMeImageUrl } from "../lib/tradeMeImage";
 
 interface IncomingItem {
   purchaseId: string;
@@ -13,6 +14,9 @@ interface IncomingItem {
   soldDate?: string | null;
   saleChannel?: string | null;
   packed?: boolean | null;
+  // Optional (older clients omit it). Empty, invalid or non-Trade Me URLs are
+  // stored as null rather than rejecting the sync.
+  imageUrl?: string | null;
 }
 interface IncomingJob {
   groupKey: string;
@@ -159,6 +163,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               soldDate: item.soldDate || null,
               saleChannel: item.saleChannel || null,
               packed: Boolean(item.packed),
+              imageUrl: sanitiseTradeMeImageUrl(item.imageUrl),
             },
             update: {
               jobId: savedJob.id,
@@ -171,6 +176,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
               soldDate: item.soldDate || null,
               saleChannel: item.saleChannel || null,
               packed: Boolean(item.packed),
+              imageUrl: sanitiseTradeMeImageUrl(item.imageUrl),
             },
           });
         }

@@ -52,13 +52,22 @@ and dispatches drop out of Pack Check on the next push.
           "salePrice": 42.5,               // total for this line, not per unit
           "shippingPrice": 6.5,
           "soldDate": "2026-11-07T21:14:00Z",
-          "saleChannel": "auction"
+          "saleChannel": "auction",
+          "imageUrl": "https://trademe.tmcdn.co.nz/photoserver/full/123.jpg"
         }
       ]
     }
   ]
 }
 ```
+
+`imageUrl` is optional: older clients can leave it out, or send `""` when
+there's no photo. Only http(s) URLs on Trade Me photo hosts (`trademe.co.nz`,
+`tmcdn.co.nz` and their subdomains) are kept, and http is upgraded to https.
+Anything else is stored as no photo; the sync itself never fails because of
+it. Each push replaces the stored URL, so clearing or changing it takes
+effect on the next sync. This server never downloads the image; the packer's
+browser loads it directly.
 
 An empty `jobs` list is refused, because it would remove every job and is
 usually a bug. When nothing really is ready to pack, send

@@ -82,7 +82,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           quantity: i.quantity,
           sku: i.sku ?? "",
           variantTitle: undefined,
-          imageUrl: null,
+          imageUrl: i.imageUrl,
           productUrl: i.listingId ? `https://www.trademe.co.nz/a/listing/${i.listingId}` : null,
           productId: null,
           unitPrice: i.quantity ? i.salePrice / i.quantity : i.salePrice,
