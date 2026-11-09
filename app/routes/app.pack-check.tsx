@@ -3,9 +3,11 @@ import {
   Page, Layout, Card, Text, Button, ButtonGroup, Select, TextField,
   Badge, ProgressBar, Divider, InlineStack, BlockStack, Box, EmptyState, Spinner,
 } from "@shopify/polaris";
-import { normaliseSku, skuSortKey, resolveDrawerNumber, type DrawerRangeConfig } from "../lib/sku";
+import { normaliseSku, resolveDrawerNumber, type DrawerRangeConfig } from "../lib/sku";
 import { findCustomerNote, type CustomerNoteRecord } from "../lib/customerNotes";
 import { assignPackKeys } from "../lib/tradeMeMerge";
+import { Thumb } from "../components/Thumb";
+import { buildPackItems } from "../lib/packItems";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -292,26 +294,7 @@ export default function PackCheck() {
     setFilter("all");
     const customerOrders = orderList.filter(o => packKeyOf(o) === customer).sort(shopifyFirst);
     setSelectedOrderIds(customerOrders.map(o => o.id));
-    const map = new Map<string, PackItem>();
-    for (const order of customerOrders) {
-      for (const item of order.lineItems) {
-        const sku = normaliseSku(item.sku || "");
-        const key = sku || item.id;
-        if (map.has(key)) {
-          map.get(key)!.quantity += item.quantity;
-          if (!map.get(key)!.orderNames.includes(order.name)) map.get(key)!.orderNames.push(order.name);
-        } else {
-          map.set(key, { ...item, sku, scanned: 0, sortKey: sku ? skuSortKey(sku) : `ZZZ_${item.title}`, orderNames: [order.name] });
-        }
-      }
-    }
-    if (scannedMap) {
-      for (const [key, count] of Object.entries(scannedMap)) {
-        const item = map.get(key);
-        if (item) item.scanned = count;
-      }
-    }
-    const sorted = [...map.values()].sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+    const sorted = buildPackItems(customerOrders, scannedMap);
     setPackItems(sorted);
     packItemsRef.current = sorted;
     setTimeout(() => { (document.activeElement as HTMLElement)?.blur(); scanRef.current?.focus(); }, 200);
@@ -833,7 +816,7 @@ export default function PackCheck() {
               )}
               {mostValuable && (
                 <div style={{ background: "rgba(255,255,255,0.12)", borderRadius: 8, padding: "12px 16px", display: "flex", alignItems: "center", gap: 14 }}>
-                  {mostValuable.imageUrl && <img src={mostValuable.imageUrl} alt={mostValuable.title} style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 6, flexShrink: 0 }} />}
+                  <Thumb src={mostValuable.imageUrl} sku={mostValuable.sku} title={mostValuable.title} size={56} radius={6} fontSize={16} colour={getPrefixColour(mostValuable.sku)} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ color: "#ffd700", fontWeight: 700, fontSize: 12, textTransform: "uppercase", marginBottom: 2 }}>⭐ Most Valuable — Pack On Top</div>
                     <div style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>{mostValuable.title}</div>
@@ -861,13 +844,7 @@ export default function PackCheck() {
           <Layout.Section>
             <Card>
               <div style={{ display: "flex", gap: 24, alignItems: "center", padding: "8px 0" }}>
-                {nextItem.imageUrl ? (
-                  <img src={nextItem.imageUrl} alt={nextItem.title} style={{ width: 120, height: 120, objectFit: "cover", borderRadius: 8, flexShrink: 0 }} />
-                ) : (
-                  <div style={{ width: 120, height: 120, borderRadius: 8, flexShrink: 0, background: nextColour.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, color: nextColour.text }}>
-                    {nextItem.sku ? nextItem.sku.substring(0, 2) : "?"}
-                  </div>
-                )}
+                <Thumb src={nextItem.imageUrl} sku={nextItem.sku} title={nextItem.title} size={120} radius={8} fontSize={28} colour={nextColour} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 11, color: "#888", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.08em" }}>Next to pack</div>
                   {nextItem.sku ? (
@@ -1093,23 +1070,11 @@ export default function PackCheck() {
                               {/* Image — clickable to product */}
                               {item.productUrl ? (
                                 <a href={item.productUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ flexShrink: 0 }}>
-                                  {item.imageUrl ? (
-                                    <img src={item.imageUrl} alt={item.title} style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 5, opacity: done ? 0.5 : 1, display: "block" }} />
-                                  ) : (
-                                    <div style={{ width: 40, height: 40, borderRadius: 5, background: c.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: c.text }}>
-                                      {item.sku ? item.sku.substring(0, 2) : "?"}
-                                    </div>
-                                  )}
+                                  <Thumb src={item.imageUrl} sku={item.sku} title={item.title} size={40} radius={5} fontSize={10} colour={c} dim={done} />
                                 </a>
                               ) : (
                                 <div style={{ flexShrink: 0 }}>
-                                  {item.imageUrl ? (
-                                    <img src={item.imageUrl} alt={item.title} style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 5, opacity: done ? 0.5 : 1 }} />
-                                  ) : (
-                                    <div style={{ width: 40, height: 40, borderRadius: 5, background: c.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 700, color: c.text }}>
-                                      {item.sku ? item.sku.substring(0, 2) : "?"}
-                                    </div>
-                                  )}
+                                  <Thumb src={item.imageUrl} sku={item.sku} title={item.title} size={40} radius={5} fontSize={10} colour={c} dim={done} />
                                 </div>
                               )}
 
