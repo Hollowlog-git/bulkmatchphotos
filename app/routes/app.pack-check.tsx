@@ -5,6 +5,7 @@ import {
 } from "@shopify/polaris";
 import { normaliseSku, skuSortKey, resolveDrawerNumber, type DrawerRangeConfig } from "../lib/sku";
 import { findCustomerNote, type CustomerNoteRecord } from "../lib/customerNotes";
+import { assignPackKeys } from "../lib/tradeMeMerge";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -28,7 +29,15 @@ interface Order {
   // Only set on Trade Me jobs synced from the local app (/api/trademe-jobs).
   deliveryAddressText?: string | null;
   tradeMe?: { groupKey: string; fulfilmentChannel: string; buyerUsername: string | null; purchaseIds: string[] };
+  // Which package this order is packed in. Shopify orders group by customer
+  // name as before; a Trade Me job joins a Shopify group only on a verified
+  // email + address match (lib/tradeMeMerge), otherwise it gets its own key.
+  packKey?: string;
 }
+const packKeyOf = (o: Order) => o.packKey ?? o.customer;
+// Shopify orders first, so their customer, email and address lead the package.
+const shopifyFirst = (a: Order, b: Order) => Number(!!a.tradeMe) - Number(!!b.tradeMe);
+const packLabel = (group: Order[]) => [...group].sort(shopifyFirst)[0]?.customer ?? "";
 interface PackItem extends LineItem {
   scanned: number; sortKey: string; orderNames: string[];
 }
@@ -173,7 +182,7 @@ export default function PackCheck() {
           const tmRes = await fetch("/api/trademe-jobs");
           if (!tmRes.ok) throw new Error(`HTTP ${tmRes.status}`);
           const tmData = await tmRes.json();
-          fetched = [...fetched, ...(tmData.orders ?? [])];
+          fetched = assignPackKeys([...fetched, ...(tmData.orders ?? [])]);
         } catch (e: any) {
           console.error("Failed to fetch Trade Me jobs", e);
           setTradeMeError(`Couldn't load Trade Me jobs (${e.message}). Showing Shopify orders only.`);
@@ -184,8 +193,8 @@ export default function PackCheck() {
       if (fetched.length > 0) {
         const groups = new Map<string, Order[]>();
         for (const order of fetched) {
-          if (!groups.has(order.customer)) groups.set(order.customer, []);
-          groups.get(order.customer)!.push(order);
+          if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
+          groups.get(packKeyOf(order))!.push(order);
         }
         const session = restoreSession ? loadSession() : null;
         let targetCustomer = "";
@@ -220,8 +229,8 @@ export default function PackCheck() {
     if (!allOrders.length) return;
     const groups = new Map<string, Order[]>();
     for (const order of allOrders) {
-      if (!groups.has(order.customer)) groups.set(order.customer, []);
-      groups.get(order.customer)!.push(order);
+      if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
+      groups.get(packKeyOf(order))!.push(order);
     }
     const sorted = [...groups.entries()].sort((a, b) => {
       const aDate = Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
@@ -234,7 +243,7 @@ export default function PackCheck() {
       clearSession();
       setFulfillMsg(null);
       selectOrderByCustomer(customers[nextIdx], allOrders);
-      setScanMsg({ text: `→ Moved to ${customers[nextIdx]}`, tone: "success" });
+      setScanMsg({ text: `→ Moved to ${packLabel(sorted[nextIdx][1])}`, tone: "success" });
     } else {
       setScanMsg({ text: "No more orders!", tone: "warning" });
     }
@@ -250,7 +259,7 @@ export default function PackCheck() {
     setScanMsg({ text: "", tone: "" });
     setFulfillMsg(null);
     setFilter("all");
-    const customerOrders = orderList.filter(o => o.customer === customer);
+    const customerOrders = orderList.filter(o => packKeyOf(o) === customer).sort(shopifyFirst);
     setSelectedOrderIds(customerOrders.map(o => o.id));
     const map = new Map<string, PackItem>();
     for (const order of customerOrders) {
@@ -379,13 +388,21 @@ export default function PackCheck() {
     return () => document.removeEventListener("keydown", handleKeyDown, true);
   }, []);
 
-  const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id));
+  const selectedOrders = orders.filter(o => selectedOrderIds.includes(o.id)).sort(shopifyFirst);
   const totalShipping = selectedOrders.reduce((s, o) => s + o.shippingAmount, 0);
   const totalOrderValue = selectedOrders.reduce((s, o) => s + o.totalValue, 0);
+  // Shopify orders merged with a Trade Me job. The Trade Me package total can
+  // already include Buy Now goods that are also Shopify orders, so the two
+  // sources are shown side by side and never added together.
+  const isMixedPackage = selectedOrders.some(o => o.tradeMe) && selectedOrders.some(o => !o.tradeMe);
+  const sourceAmounts = isMixedPackage ? [
+    { label: "Shopify orders", value: selectedOrders.filter(o => !o.tradeMe).reduce((s, o) => s + o.totalValue, 0), shipping: selectedOrders.filter(o => !o.tradeMe).reduce((s, o) => s + o.shippingAmount, 0) },
+    { label: "Trade Me package", value: selectedOrders.filter(o => o.tradeMe).reduce((s, o) => s + o.totalValue, 0), shipping: selectedOrders.filter(o => o.tradeMe).reduce((s, o) => s + o.shippingAmount, 0) },
+  ] : [];
   const noShippingPaid = selectedOrders.length > 0 && totalShipping === 0;
   const allDiscountCodes = selectedOrders.flatMap(o => o.discountCodes.map(code => ({ code, orderName: o.name })));
   const hasAnyIssue = noShippingPaid || allDiscountCodes.length > 0;
-  const shippingAddress = selectedOrders[0]?.shippingAddress ?? null;
+  const shippingAddress = selectedOrders.find(o => o.shippingAddress)?.shippingAddress ?? null;
   const orderNotes = selectedOrders
     .filter(o => o.note && o.note.trim())
     .map(o => ({ orderName: o.name, note: o.note as string }));
@@ -609,8 +626,8 @@ export default function PackCheck() {
   const groupedOptions = () => {
     const groups = new Map<string, Order[]>();
     for (const order of orders) {
-      if (!groups.has(order.customer)) groups.set(order.customer, []);
-      groups.get(order.customer)!.push(order);
+      if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
+      groups.get(packKeyOf(order))!.push(order);
     }
     const options: { label: string; value: string }[] = [{ label: "— Select an order —", value: "" }];
     const sorted = [...groups.entries()].sort((a, b) => {
@@ -618,7 +635,9 @@ export default function PackCheck() {
       const bDate = Math.max(...b[1].map(o => new Date(o.createdAt).getTime()));
       return bDate - aDate;
     });
-    for (const [customer, customerOrders] of sorted) {
+    for (const [packKey, customerOrders] of sorted) {
+      const customer = packLabel(customerOrders);
+      const linked = customerOrders.some(o => o.tradeMe) && customerOrders.some(o => !o.tradeMe);
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
       const orderCount = customerOrders.length;
       const orderLabel = orderCount > 1 ? `${orderCount} orders` : customerOrders[0].name;
@@ -628,8 +647,8 @@ export default function PackCheck() {
       const ageDays = Math.floor((Date.now() - Math.min(...customerOrders.map(o => new Date(o.createdAt).getTime()))) / 86400000);
       const ageLabel = ageDays >= 2 ? ` 🕐${ageDays}d` : "";
       options.push({
-        label: `${customer} — ${orderLabel} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}`,
-        value: customer,
+        label: `${customer} — ${orderLabel}${linked ? " + Trade Me" : ""} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}`,
+        value: packKey,
       });
     }
     return options;
@@ -915,9 +934,20 @@ export default function PackCheck() {
 
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: "#f0f4ff", border: "2px solid #2563eb" }}>
                         <div style={{ fontWeight: 700, fontSize: 14, color: "#2563eb" }}>💰 Order value</div>
-                        <div style={{ fontWeight: 700, fontSize: 20, color: "#2563eb" }}>
-                          {fmt(totalOrderValue, currencyCode)}
-                        </div>
+                        {isMixedPackage ? (
+                          <div style={{ textAlign: "right" }}>
+                            {sourceAmounts.map(a => (
+                              <div key={a.label} style={{ fontSize: 14, color: "#2563eb" }}>
+                                {a.label}: <strong style={{ fontSize: 17 }}>{fmt(a.value, currencyCode)}</strong>
+                              </div>
+                            ))}
+                            <div style={{ fontSize: 11, color: "#666" }}>Not added together — the Trade Me total may include Buy Now items</div>
+                          </div>
+                        ) : (
+                          <div style={{ fontWeight: 700, fontSize: 20, color: "#2563eb" }}>
+                            {fmt(totalOrderValue, currencyCode)}
+                          </div>
+                        )}
                       </div>
 
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: totalShipping === 0 ? "#fff0f0" : "#f0fff4", border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}` }}>
@@ -926,7 +956,9 @@ export default function PackCheck() {
                             {totalShipping === 0 ? "❌ No shipping paid" : "✓ Shipping paid"}
                           </div>
                           <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
-                            {selectedOrders.map(o => o.shippingTitle).filter((v, i, a) => a.indexOf(v) === i).join(", ")}
+                            {isMixedPackage
+                              ? sourceAmounts.map(a => `${a.label} ${fmt(a.shipping, currencyCode)}`).join(" · ")
+                              : selectedOrders.map(o => o.shippingTitle).filter((v, i, a) => a.indexOf(v) === i).join(", ")}
                           </div>
                         </div>
                         <div style={{ fontWeight: 700, fontSize: 20, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
