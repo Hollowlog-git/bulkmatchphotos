@@ -704,9 +704,13 @@ export default function PackCheck() {
         )}
 
         <Layout.Section>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
             <Text variant="headingLg" as="h1">Pack Check</Text>
-            <Text variant="bodySm" tone="subdued" as="span">J = mark packed · K = undo · Space = next order</Text>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <Text variant="bodySm" tone="subdued" as="span">J = mark packed · K = undo · Space = next order</Text>
+              <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
+              <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
+            </div>
           </div>
         </Layout.Section>
 
@@ -734,8 +738,6 @@ export default function PackCheck() {
                   {totalUnfulfilledCount} unfulfilled
                 </div>
               )}
-              <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
-              <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
               <button
                 type="button"
                 onClick={() => setMuted(m => !m)}
