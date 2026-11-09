@@ -112,6 +112,13 @@ export default function PackCheck() {
   });
   const includeTradeMeRef = useRef(includeTradeMe);
   const [tradeMeError, setTradeMeError] = useState<string | null>(null);
+  // "Trade Me" filter: when off, hides every package containing a Trade Me
+  // order (Trade Me sales-channel orders or synced Trade Me jobs), leaving
+  // website and Shop App orders. On by default, which shows everything.
+  const [showTradeMe, setShowTradeMe] = useState(() => {
+    try { return localStorage.getItem("packcheck_show_trademe") !== "0"; } catch { return true; }
+  });
+  const showTradeMeRef = useRef(showTradeMe);
   const [drawers, setDrawers] = useState<DrawerRangeConfig[]>([]);
   const [customerNotes, setCustomerNotes] = useState<CustomerNoteRecord[]>([]);
   const [noteFormOpen, setNoteFormOpen] = useState(false);
@@ -170,6 +177,23 @@ export default function PackCheck() {
   }
   function clearSession() { try { localStorage.removeItem(STORAGE_KEY); } catch {} }
 
+  // Groups orders into packages, honouring the Trade Me filter.
+  function groupPackages(orderList: Order[]) {
+    const groups = new Map<string, Order[]>();
+    for (const order of orderList) {
+      if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
+      groups.get(packKeyOf(order))!.push(order);
+    }
+    if (!showTradeMeRef.current) {
+      for (const [key, group] of groups) {
+        if (group.some(o => o.tradeMe || o.channel === "Trade Me")) groups.delete(key);
+      }
+    }
+    return groups;
+  }
+  const newestFirst = (a: [string, Order[]], b: [string, Order[]]) =>
+    Math.max(...b[1].map(o => new Date(o.createdAt).getTime())) - Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
+
   const fetchOrders = useCallback(async (restoreSession = true) => {
     setLoadingOrders(true);
     try {
@@ -191,11 +215,7 @@ export default function PackCheck() {
       setOrders(fetched);
       ordersRef.current = fetched;
       if (fetched.length > 0) {
-        const groups = new Map<string, Order[]>();
-        for (const order of fetched) {
-          if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
-          groups.get(packKeyOf(order))!.push(order);
-        }
+        const groups = groupPackages(fetched);
         const session = restoreSession ? loadSession() : null;
         let targetCustomer = "";
         if (session && groups.has(session.customer)) {
@@ -223,15 +243,26 @@ export default function PackCheck() {
     fetchOrders(false);
   }
 
+  function toggleShowTradeMe() {
+    const next = !showTradeMeRef.current;
+    showTradeMeRef.current = next;
+    setShowTradeMe(next);
+    try { localStorage.setItem("packcheck_show_trademe", next ? "1" : "0"); } catch {}
+    // Keep the current package if it's still shown; otherwise jump to the
+    // newest visible one (or nothing, if none are left).
+    const groups = groupPackages(ordersRef.current);
+    if (groups.has(selectValueRef.current)) return;
+    clearSession();
+    const newest = [...groups.entries()].sort(newestFirst)[0];
+    if (newest) selectOrderByCustomer(newest[0], ordersRef.current);
+    else selectOrder("");
+  }
+
   function moveToNextOrder() {
     const allOrders = ordersRef.current;
     const currentCustomer = selectValueRef.current;
     if (!allOrders.length) return;
-    const groups = new Map<string, Order[]>();
-    for (const order of allOrders) {
-      if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
-      groups.get(packKeyOf(order))!.push(order);
-    }
+    const groups = groupPackages(allOrders);
     const sorted = [...groups.entries()].sort((a, b) => {
       const aDate = Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
       const bDate = Math.max(...b[1].map(o => new Date(o.createdAt).getTime()));
@@ -624,11 +655,7 @@ export default function PackCheck() {
   }
 
   const groupedOptions = () => {
-    const groups = new Map<string, Order[]>();
-    for (const order of orders) {
-      if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
-      groups.get(packKeyOf(order))!.push(order);
-    }
+    const groups = groupPackages(orders);
     const options: { label: string; value: string }[] = [{ label: "— Select an order —", value: "" }];
     const sorted = [...groups.entries()].sort((a, b) => {
       const aDate = Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
@@ -708,6 +735,7 @@ export default function PackCheck() {
                 </div>
               )}
               <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
+              <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
               <button
                 type="button"
                 onClick={() => setMuted(m => !m)}
