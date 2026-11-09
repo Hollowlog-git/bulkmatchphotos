@@ -112,12 +112,13 @@ export default function PackCheck() {
   });
   const includeTradeMeRef = useRef(includeTradeMe);
   const [tradeMeError, setTradeMeError] = useState<string | null>(null);
-  // "Website only" filter: show only packages whose orders all came from the
-  // Online Store channel (hides Shop App, Trade Me channel and synced jobs).
-  const [websiteOnly, setWebsiteOnly] = useState(() => {
-    try { return localStorage.getItem("packcheck_website_only") === "1"; } catch { return false; }
+  // "Trade Me" filter: when off, hides every package containing a Trade Me
+  // order (Trade Me sales-channel orders or synced Trade Me jobs), leaving
+  // website and Shop App orders. On by default, which shows everything.
+  const [showTradeMe, setShowTradeMe] = useState(() => {
+    try { return localStorage.getItem("packcheck_show_trademe") !== "0"; } catch { return true; }
   });
-  const websiteOnlyRef = useRef(websiteOnly);
+  const showTradeMeRef = useRef(showTradeMe);
   const [drawers, setDrawers] = useState<DrawerRangeConfig[]>([]);
   const [customerNotes, setCustomerNotes] = useState<CustomerNoteRecord[]>([]);
   const [noteFormOpen, setNoteFormOpen] = useState(false);
@@ -176,16 +177,16 @@ export default function PackCheck() {
   }
   function clearSession() { try { localStorage.removeItem(STORAGE_KEY); } catch {} }
 
-  // Groups orders into packages, honouring the Website only filter.
+  // Groups orders into packages, honouring the Trade Me filter.
   function groupPackages(orderList: Order[]) {
     const groups = new Map<string, Order[]>();
     for (const order of orderList) {
       if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
       groups.get(packKeyOf(order))!.push(order);
     }
-    if (websiteOnlyRef.current) {
+    if (!showTradeMeRef.current) {
       for (const [key, group] of groups) {
-        if (!group.every(o => !o.tradeMe && o.channel === "Online Store")) groups.delete(key);
+        if (group.some(o => o.tradeMe || o.channel === "Trade Me")) groups.delete(key);
       }
     }
     return groups;
@@ -242,11 +243,11 @@ export default function PackCheck() {
     fetchOrders(false);
   }
 
-  function toggleWebsiteOnly() {
-    const next = !websiteOnlyRef.current;
-    websiteOnlyRef.current = next;
-    setWebsiteOnly(next);
-    try { localStorage.setItem("packcheck_website_only", next ? "1" : "0"); } catch {}
+  function toggleShowTradeMe() {
+    const next = !showTradeMeRef.current;
+    showTradeMeRef.current = next;
+    setShowTradeMe(next);
+    try { localStorage.setItem("packcheck_show_trademe", next ? "1" : "0"); } catch {}
     // Keep the current package if it's still shown; otherwise jump to the
     // newest visible one (or nothing, if none are left).
     const groups = groupPackages(ordersRef.current);
@@ -734,7 +735,7 @@ export default function PackCheck() {
                 </div>
               )}
               <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
-              <Button onClick={toggleWebsiteOnly} pressed={websiteOnly}>{websiteOnly ? "✓ Website only" : "Website only"}</Button>
+              <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
               <button
                 type="button"
                 onClick={() => setMuted(m => !m)}
