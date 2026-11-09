@@ -13,6 +13,11 @@ import db from "../db.server";
 
 const TRADEME_ID_PREFIX = "trademe:";
 
+function isPickableSku(sku: string | null): boolean {
+  const s = (sku ?? "").trim();
+  return s.length > 0 && !s.toUpperCase().startsWith("TV|");
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -25,7 +30,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const orders = jobs
     .map((job) => {
-      const items = job.items.filter((i) => !i.packed && !packedIds.has(i.purchaseId));
+      // Rows without a usable picking SKU (blank, or a "TV|..." integration
+      // reference) aren't shown as pickable cards. The local app already
+      // filters these; this is a backstop for older or unfiltered pushes.
+      const items = job.items.filter(
+        (i) => !i.packed && !packedIds.has(i.purchaseId) && isPickableSku(i.sku),
+      );
       if (!items.length) return null;
       // Oldest sale in the job stands in for the order date; fall back to the
       // last sync time if the local app didn't send sold dates.

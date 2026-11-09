@@ -104,3 +104,41 @@ Trade Me jobs only appear when the **"Clearance week"** toggle in the top
 bar is on. It's off by default, because Trade Me sales may also reach Shopify as
 orders through the Trade Me sales channel and would then show twice.
 Packing a Trade Me job records its items as packed. It never touches Shopify.
+
+### Combining with Shopify orders
+
+Shopify orders are still grouped by customer name, as before. A Trade Me job
+joins a buyer's Shopify group (shown as "+ Trade Me" in the order list) only
+when **all** of these hold:
+
+- the job's `buyerEmail` matches, ignoring case and spaces, and every Shopify
+  order in the group with an email has that same email;
+- every Shopify order in the group with an address has the same house
+  number, street name and postcode as the job's `deliveryAddress`. Formatting
+  doesn't matter: case, punctuation, line breaks, "Rd"/"Road" and similar
+  street-type abbreviations, "Flat 2, 12" vs "2/12", and "12A" vs "12 A";
+- exactly one Shopify group matches the job, and no other job matches that group.
+
+Otherwise the job stays a separate package. A name match alone never merges,
+and a different house number, street name, street type (Road vs Street) or
+postcode keeps them apart.
+
+In a combined package:
+
+- Shopify lines and Trade Me lines are each their own source. Identical SKUs
+  from separate purchases add up in quantity; nothing is de-duplicated by SKU
+  or title.
+- Order value and shipping are shown per source ("Shopify orders" and "Trade
+  Me package") and never added together. The $0-shipping warning only shows
+  when both sources have $0 shipping.
+- Finishing the package fulfils the Shopify orders as before, and marks packed
+  only the Trade Me purchase IDs that were shown in the package.
+
+Items with a blank SKU or a `TV|…` reference are not shown as pickable cards.
+
+### Proposed, not yet implemented: `shippingStatus`
+
+An optional job field, `"shippingStatus": "paid" | "manually_approved" |
+"unpaid"`. When it's `manually_approved`, Pack Check would show "Shipping
+approved manually" in place of the $0 warning, without inventing an amount.
+Agree it here before either app sends or reads it.
