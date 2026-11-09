@@ -7,8 +7,8 @@
 //   - the buyer email matches (normalised), and every Shopify order in the
 //     group with an email has that same email; and
 //   - every Shopify order in the group with an address has an address
-//     compatible with the job's delivery address (street line and postcode
-//     both appear in it), and at least one does.
+//     compatible with the job's delivery address (same street words and
+//     numbers and same postcode, ignoring formatting), and at least one does.
 // One job may match one group, and one group may take one job; anything else
 // is ambiguous and everything stays separate. Unmatched jobs get their own
 // package. Orders are never altered — only a packKey is assigned — so every
@@ -30,17 +30,43 @@ export interface MergeableOrder {
 
 export type WithPackKey<T> = T & { packKey: string };
 
-const words = (s: string) => ` ${s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `;
 const normEmail = (e: string | null | undefined) => (e ?? "").trim().toLowerCase();
 
+// Street-type spellings that mean the same thing ("Rd" / "Road", "St." / "Street").
+const STREET_WORDS: Record<string, string> = {
+  rd: "road", st: "street", str: "street", ave: "avenue", av: "avenue", dr: "drive", drv: "drive",
+  pl: "place", cres: "crescent", cr: "crescent", crs: "crescent", tce: "terrace", terr: "terrace",
+  ln: "lane", ct: "court", crt: "court", hwy: "highway", blvd: "boulevard", cl: "close",
+  gr: "grove", gro: "grove", pde: "parade", sq: "square", wy: "way", mt: "mount",
+  esp: "esplanade", sh: "state highway",
+};
+// Unit/flat labels carry no address information once the numbers are kept
+// ("Flat 2, 12 Kauri Rd" and "2/12 Kauri Road" both reduce to 2 12 kauri road).
+const IGNORED_WORDS = new Set(["flat", "unit", "apt", "apartment", "level", "lvl", "suite"]);
+
+function addressTokens(s: string): string[] {
+  return s
+    .toLowerCase()
+    .replace(/(\d)([a-z])\b/g, "$1 $2") // "12a" -> "12 a", so "12A" and "12 A" agree
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter((w) => w && !IGNORED_WORDS.has(w))
+    .flatMap((w) => (STREET_WORDS[w] ?? w).split(" "));
+}
+
+// Compatible when every word and number of the Shopify street line, and the
+// postcode, appear somewhere in the Trade Me delivery address. Punctuation,
+// case, line breaks, word order, street-type abbreviations and unit labels
+// don't matter; a different house number, street name or postcode does.
 export function addressCompatible(sa: MergeAddress | null, text: string | null | undefined): boolean {
   if (!sa || !text) return false;
-  const t = words(text);
-  const street = words(sa.address1).trim();
-  const zip = words(sa.zip).trim();
-  if (!street) return false;
-  if (!t.includes(` ${street} `)) return false;
-  if (zip && !t.includes(` ${zip} `)) return false;
+  const have = new Set(addressTokens(text));
+  const street = addressTokens(sa.address1);
+  if (!street.length || !street.some((w) => /\d/.test(w))) return false;
+  if (!street.every((w) => have.has(w))) return false;
+  const zip = addressTokens(sa.zip);
+  if (zip.length && !zip.every((w) => have.has(w))) return false;
   return true;
 }
 

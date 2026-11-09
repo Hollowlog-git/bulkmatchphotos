@@ -113,12 +113,15 @@ when **all** of these hold:
 
 - the job's `buyerEmail` matches, ignoring case and spaces, and every Shopify
   order in the group with an email has that same email;
-- every Shopify order in the group with an address has a street line *and*
-  postcode that appear, as whole words, in the job's `deliveryAddress`;
+- every Shopify order in the group with an address has the same house
+  number, street name and postcode as the job's `deliveryAddress`. Formatting
+  doesn't matter: case, punctuation, line breaks, "Rd"/"Road" and similar
+  street-type abbreviations, "Flat 2, 12" vs "2/12", and "12A" vs "12 A";
 - exactly one Shopify group matches the job, and no other job matches that group.
 
-Otherwise the job stays a separate package. A name match alone never merges.
-In particular, "12 Kauri Rd" won't match "12 Kauri Road".
+Otherwise the job stays a separate package. A name match alone never merges,
+and a different house number, street name, street type (Road vs Street) or
+postcode keeps them apart.
 
 In a combined package:
 
