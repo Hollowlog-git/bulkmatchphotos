@@ -114,6 +114,8 @@ export default function PackCheck() {
   });
   const includeTradeMeRef = useRef(includeTradeMe);
   const [tradeMeError, setTradeMeError] = useState<string | null>(null);
+  // Set when Shopify had more open orders than /api/orders loads (150).
+  const [ordersCapped, setOrdersCapped] = useState<number | null>(null);
   // "Trade Me" filter: when off, hides every package containing a Trade Me
   // order (Trade Me sales-channel orders or synced Trade Me jobs), leaving
   // website and Shop App orders. On by default, which shows everything.
@@ -202,6 +204,7 @@ export default function PackCheck() {
       const res = await fetch("/api/orders");
       const data = await res.json();
       let fetched: Order[] = data.orders ?? [];
+      setOrdersCapped(data.truncated ? (data.maxOrders ?? fetched.length) : null);
       setTradeMeError(null);
       if (includeTradeMeRef.current) {
         try {
@@ -735,6 +738,14 @@ export default function PackCheck() {
             </InlineStack>
           </div>
         </Layout.Section>
+
+        {ordersCapped !== null && (
+          <Layout.Section>
+            <div style={{ background: "#fff3cd", border: "1px solid #f0c040", borderRadius: 8, padding: "10px 16px", color: "#856404", fontWeight: 700 }}>
+              ⚠️ Only the oldest {ordersCapped} unfulfilled orders are loaded. Newer orders are not shown until some are fulfilled.
+            </div>
+          </Layout.Section>
+        )}
 
         {tradeMeError && (
           <Layout.Section>

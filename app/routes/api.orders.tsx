@@ -1,99 +1,117 @@
 import type { LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
 
+const PAGE_SIZE = 50;
+const MAX_ORDERS = 150;
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
     const { admin } = await authenticate.admin(request);
 
-    const response = await admin.graphql(`
-      #graphql
-      query {
-        orders(
-          first: 50,
-          query: "fulfillment_status:unfulfilled status:open"
-        ) {
-          edges {
-            node {
-              id
-              name
-              createdAt
-              note
-              displayFulfillmentStatus
-              displayFinancialStatus
-              currentTotalPriceSet {
-                shopMoney {
-                  amount
-                }
-              }
-              cancelledAt
-              channelInformation {
-                channelDefinition {
-                  channelName
-                  handle
-                }
-              }
-              customer {
+    // Shopify returns at most 50 orders per page here (each carries up to 50
+    // line items), so page through, oldest first, up to MAX_ORDERS. If more
+    // are waiting, Pack Check is told so it can warn instead of silently
+    // leaving the newest orders out.
+    const edgesAll: any[] = [];
+    let after: string | null = null;
+    let truncated = false;
+    for (;;) {
+      const response: Response = await admin.graphql(`
+        #graphql
+        query PackCheckOrders($after: String) {
+          orders(
+            first: ${PAGE_SIZE},
+            after: $after,
+            sortKey: CREATED_AT,
+            query: "fulfillment_status:unfulfilled status:open"
+          ) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
                 id
-                displayName
-                email
-                numberOfOrders
-              }
-              shippingLine {
-                title
-                originalPriceSet {
-                  shopMoney {
-                    amount
-                    currencyCode
-                  }
-                }
-                discountedPriceSet {
+                name
+                createdAt
+                note
+                displayFulfillmentStatus
+                displayFinancialStatus
+                currentTotalPriceSet {
                   shopMoney {
                     amount
                   }
                 }
-              }
-              shippingAddress {
-                firstName
-                lastName
-                address1
-                address2
-                city
-                province
-                zip
-                country
-              }
-              discountCodes
-              lineItems(first: 50) {
-                edges {
-                  node {
-                    id
-                    title
-                    quantity
-                    product {
+                cancelledAt
+                channelInformation {
+                  channelDefinition {
+                    channelName
+                    handle
+                  }
+                }
+                customer {
+                  id
+                  displayName
+                  email
+                  numberOfOrders
+                }
+                shippingLine {
+                  title
+                  originalPriceSet {
+                    shopMoney {
+                      amount
+                      currencyCode
+                    }
+                  }
+                  discountedPriceSet {
+                    shopMoney {
+                      amount
+                    }
+                  }
+                }
+                shippingAddress {
+                  firstName
+                  lastName
+                  address1
+                  address2
+                  city
+                  province
+                  zip
+                  country
+                }
+                discountCodes
+                lineItems(first: 50) {
+                  edges {
+                    node {
                       id
-                      handle
-                      onlineStoreUrl
-                    }
-                    originalUnitPriceSet {
-                      shopMoney {
-                        amount
-                        currencyCode
-                      }
-                    }
-                    discountedUnitPriceSet {
-                      shopMoney {
-                        amount
-                      }
-                    }
-                    variant {
-                      sku
                       title
+                      quantity
                       product {
                         id
                         handle
                         onlineStoreUrl
-                        featuredImage {
-                          url
+                      }
+                      originalUnitPriceSet {
+                        shopMoney {
+                          amount
+                          currencyCode
+                        }
+                      }
+                      discountedUnitPriceSet {
+                        shopMoney {
+                          amount
+                        }
+                      }
+                      variant {
+                        sku
+                        title
+                        product {
+                          id
+                          handle
+                          onlineStoreUrl
+                          featuredImage {
+                            url
+                          }
                         }
                       }
                     }
@@ -103,17 +121,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             }
           }
         }
+      `, { variables: { after } });
+
+      const data: any = await response.json();
+
+      if (!data?.data?.orders) {
+        console.error("No orders in response:", JSON.stringify(data, null, 2));
+        if (!edgesAll.length) return Response.json({ orders: [] });
+        truncated = true; // keep what we already have, but say the list is incomplete
+        break;
       }
-    `);
 
-    const data = await response.json();
-
-    if (!data?.data?.orders) {
-      console.error("No orders in response:", JSON.stringify(data, null, 2));
-      return Response.json({ orders: [] });
+      edgesAll.push(...data.data.orders.edges);
+      const pageInfo = data.data.orders.pageInfo;
+      if (!pageInfo?.hasNextPage) break;
+      if (edgesAll.length >= MAX_ORDERS) { truncated = true; break; }
+      after = pageInfo.endCursor;
     }
 
-    const orders = data.data.orders.edges
+    const orders = edgesAll.slice(0, MAX_ORDERS)
       .filter((edge: any) => !edge.node.cancelledAt)
       .filter((edge: any) => edge.node.displayFinancialStatus !== "PENDING")
       .map((edge: any) => {
@@ -193,7 +219,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         };
       });
 
-    return Response.json({ orders });
+    return Response.json({ orders, truncated, maxOrders: MAX_ORDERS });
 
   } catch (error) {
     console.error("api/orders error:", error);
