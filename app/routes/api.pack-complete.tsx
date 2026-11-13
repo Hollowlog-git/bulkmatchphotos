@@ -4,6 +4,8 @@ import crypto from "node:crypto";
 import db from "../db.server";
 import { channelFields, fetchLiveOrders, reportPendingShopifyOrders, type LiveOrder } from "../lib/shopifyOrderEvents.server";
 import { writeUnpackedEvents } from "../lib/unpack.server";
+import { combineClearance, shopifyOrderClearance, tradeMeJobClearance, type Clearance } from "../lib/clearance";
+import { isPickableSku } from "../lib/tradeMeItems";
 
 async function purchaseIdsInPackages(shop: string): Promise<Set<string>> {
   const pkgs = await db.packedPackage.findMany({ where: { shop }, select: { purchaseIds: true } });
@@ -65,6 +67,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Ask Shopify which of these orders have since been fulfilled (= sent).
   const allIds = [...new Set(packages.flatMap((p) => JSON.parse(p.shopifyOrderIds) as string[]))];
   const fulfilled = new Set<string>();
+  const shopifyClearance = new Map<string, Clearance>();
   for (let i = 0; i < allIds.length; i += 100) {
     const res = await admin.graphql(
       `#graphql
@@ -73,6 +76,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           ... on Order {
             id
             displayFulfillmentStatus
+            displayFinancialStatus
+            cancelledAt
           }
         }
       }`,
@@ -81,6 +86,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const data: any = await res.json();
     for (const n of data?.data?.nodes ?? []) {
       if (n?.id && n.displayFulfillmentStatus === "FULFILLED") fulfilled.add(n.id);
+      if (n?.id) shopifyClearance.set(n.id, shopifyOrderClearance(n.displayFinancialStatus, !!n.cancelledAt));
     }
   }
 
@@ -104,9 +110,44 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   });
 
+  // Send status (prepacking v1) and remaining work for the Trade Me side,
+  // from the latest snapshot. A purchase missing from it is "unknown", never
+  // cleared.
+  const allPurchaseIds = [...new Set([
+    ...packages.flatMap((p) => JSON.parse(p.purchaseIds) as string[]),
+    ...legacy.flatMap((l) => l.purchaseIds),
+  ])];
+  const snapItems = await db.tradeMeJobItem.findMany({
+    where: { purchaseId: { in: allPurchaseIds }, job: { shop } },
+    include: { job: { include: { items: true } } },
+  });
+  const jobByPurchase = new Map(snapItems.map((i) => [i.purchaseId, i.job]));
+  const packedNow = new Set((await db.tradeMePackedItem.findMany({ where: { shop }, select: { purchaseId: true } })).map((r) => r.purchaseId));
+  const tradeMeStatus = (purchaseIds: string[]) => {
+    const jobs = new Map<string, (typeof snapItems)[number]["job"]>();
+    const sources: Clearance[] = [];
+    for (const id of purchaseIds) {
+      const job = jobByPurchase.get(id);
+      if (!job) sources.push({ state: "unknown", reasons: ["not in the latest Trade Me sync — check the local app"] });
+      else jobs.set(job.groupKey, job);
+    }
+    for (const job of jobs.values()) {
+      sources.push(tradeMeJobClearance({
+        dispatchClearance: job.dispatchClearance, paymentStatus: job.paymentStatus, shippingStatus: job.shippingStatus,
+        dispatchBlockers: job.dispatchBlockers ? JSON.parse(job.dispatchBlockers) : null,
+      }));
+    }
+    const remainingToPack = [...jobs.values()].reduce(
+      (n, job) => n + job.items.filter((i) => !packedNow.has(i.purchaseId) && isPickableSku(i.sku)).length, 0);
+    return { sources, remainingToPack };
+  };
+
   return Response.json({
     days: PACKED_VIEW_DAYS,
-    legacy,
+    legacy: legacy.map((l) => {
+      const tm = tradeMeStatus(l.purchaseIds);
+      return { ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack };
+    }),
     packages: packages
       .map((p) => {
         const orderIds = JSON.parse(p.shopifyOrderIds) as string[];
@@ -123,6 +164,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           // fulfilled. Trade Me-only packages can't be checked from here
           // (dispatch is tracked in the local app), so they stay listed.
           sent: orderIds.length > 0 && orderIds.every((id) => fulfilled.has(id)),
+          ...(() => {
+            const tm = tradeMeStatus(purchaseIds);
+            const shopifySources = orderIds.map((id) => shopifyClearance.get(id) ?? { state: "unknown" as const, reasons: ["Shopify status unavailable"] });
+            return { clearance: combineClearance([...shopifySources, ...tm.sources]), remainingToPack: tm.remainingToPack };
+          })(),
         };
       })
       .filter((p) => !p.sent),

@@ -1,5 +1,6 @@
 import { Badge, BlockStack, Button, Card, InlineStack, Text } from "@shopify/polaris";
 import { Thumb } from "./Thumb";
+import { CLEARANCE_LABEL, type Clearance } from "../lib/clearance";
 
 // Pack Check's "Packed" view: packages recorded as packed but not yet sent,
 // newest first, each with an undo that returns it to "To pack".
@@ -13,6 +14,8 @@ export interface PackedPackageView {
   tradeMeItems: number;
   orders: { id: string; name: string; channel: string; sent: boolean }[];
   items: { sku: string; title: string; quantity: number; imageUrl: string | null }[];
+  clearance?: Clearance;
+  remainingToPack?: number;
 }
 
 export interface LegacyPackedParcel {
@@ -20,6 +23,30 @@ export interface LegacyPackedParcel {
   packedAt: string;
   purchaseIds: string[];
   buyer: string | null;
+  clearance?: Clearance;
+  remainingToPack?: number;
+}
+
+const BADGE_TONE: Record<string, "success" | "critical" | "warning" | "attention" | undefined> = {
+  cleared: "success",
+  blocked: "critical",
+  payment_outstanding: "warning",
+  shipping_not_cleared: "attention",
+  unknown: undefined,
+};
+
+// Send status for a packed parcel: packing is done, but may it be sent?
+export function SendStatus({ clearance, remainingToPack }: { clearance?: Clearance; remainingToPack?: number }) {
+  if (!clearance) return null;
+  return (
+    <InlineStack gap="200" wrap blockAlign="center">
+      <Badge tone={BADGE_TONE[clearance.state]}>
+        {clearance.state === "cleared" && remainingToPack ? "Cleared — but items still to pack" : CLEARANCE_LABEL[clearance.state]}
+      </Badge>
+      {clearance.reasons.length > 0 && <Text as="span" variant="bodySm" tone="subdued">{clearance.reasons.join(" · ")}</Text>}
+      {!!remainingToPack && <Badge tone="attention">{`${remainingToPack} new item${remainingToPack !== 1 ? "s" : ""} still to pack — don't send yet`}</Badge>}
+    </InlineStack>
+  );
 }
 
 const GREY = { bg: "#e0e0e0", text: "#444" };
@@ -58,7 +85,8 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
   return (
     <BlockStack gap="300">
       <Text as="p" tone="subdued" variant="bodySm">
-        Packed in the last {days} days and not yet sent. A package leaves this list once its Shopify orders are
+        Packed in the last {days} days and not yet sent. Each shows whether it may be sent: only send parcels marked
+        "Cleared after packing". A package leaves this list once its Shopify orders are
         fulfilled. Trade Me-only packages stay for {days} days, as their dispatch is tracked in the local app.
       </Text>
       {packages.map((p) => {
@@ -77,6 +105,7 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
                   Undo packed
                 </Button>
               </InlineStack>
+              <SendStatus clearance={p.clearance} remainingToPack={p.remainingToPack} />
               <InlineStack gap="200" wrap>
                 {p.orders.map((o) => (
                   <Badge key={o.id} tone={o.sent ? "success" : "attention"}>
@@ -116,6 +145,7 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
                     Packed {ago(l.packedAt)} · {l.purchaseIds.length} item{l.purchaseIds.length !== 1 ? "s" : ""} · parcel {l.groupKey}
                   </Text>
                   <Text as="span" tone="subdued" variant="bodySm">Purchases: {l.purchaseIds.join(", ")}</Text>
+                  <SendStatus clearance={l.clearance} remainingToPack={l.remainingToPack} />
                 </BlockStack>
                 {onUndoLegacy && (
                   <Button tone="critical" loading={undoingId === `legacy:${l.groupKey}`} onClick={() => onUndoLegacy(l)}>

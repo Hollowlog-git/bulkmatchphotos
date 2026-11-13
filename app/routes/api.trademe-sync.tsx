@@ -5,6 +5,10 @@ import { sanitiseTradeMeImageUrl } from "../lib/tradeMeImage";
 import { decodeCursor, encodeCursor, serialiseEvent, tradeMeChannelAppIds } from "../lib/packEvents";
 import { reportPendingShopifyOrders } from "../lib/shopifyOrderEvents.server";
 import { repairMissingUnpackedEvents } from "../lib/unpack.server";
+
+// Prepacking contract v1: unpaid wins may be packed; clearance to send is
+// reported per parcel. See docs/trademe-sync.md.
+const PREPACKING_CONTRACT_VERSION = 1;
 import { unauthenticated } from "../shopify.server";
 
 interface IncomingItem {
@@ -32,6 +36,12 @@ interface IncomingJob {
   fulfilmentChannel: string;
   readiness?: string | null;
   kanbanCol?: string | null;
+  // Prepacking contract v1 (only read when the body says
+  // prepackingContractVersion: 1).
+  paymentStatus?: string | null;
+  shippingStatus?: string | null;
+  dispatchClearance?: string | null;
+  dispatchBlockers?: string[] | null;
   itemCount?: number | null;
   totalSale?: number | null;
   shippingPaid?: number | null;
@@ -70,6 +80,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return Response.json({ error: "Body must be { jobs: [...] }" }, { status: 400 });
     }
     const jobs: IncomingJob[] = body.jobs;
+    const v1 = body?.prepackingContractVersion === PREPACKING_CONTRACT_VERSION;
+    if (body?.prepackingContractVersion !== undefined && !v1) {
+      return Response.json({ error: `Unsupported prepackingContractVersion; this server supports ${PREPACKING_CONTRACT_VERSION}` }, { status: 400 });
+    }
 
     // An empty snapshot deletes every stored job. That is legitimate when
     // nothing is ready to pack, but it is also what a bug or a failed read in
@@ -84,6 +98,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     for (const job of jobs) {
       if (!job || typeof job.groupKey !== "string" || !job.groupKey.trim()) {
         return Response.json({ error: "Every job requires a non-empty groupKey" }, { status: 400 });
+      }
+      if (v1) {
+        const shortStr = (v: unknown) => v === undefined || v === null || (typeof v === "string" && v.length <= 50);
+        if (!shortStr(job.paymentStatus) || !shortStr(job.shippingStatus)) {
+          return Response.json({ error: `Job ${job.groupKey}: paymentStatus/shippingStatus must be short strings` }, { status: 400 });
+        }
+        if (job.dispatchClearance !== undefined && job.dispatchClearance !== null && job.dispatchClearance !== "cleared" && job.dispatchClearance !== "blocked") {
+          return Response.json({ error: `Job ${job.groupKey}: dispatchClearance must be "cleared" or "blocked"` }, { status: 400 });
+        }
+        if (job.dispatchBlockers !== undefined && job.dispatchBlockers !== null
+          && (!Array.isArray(job.dispatchBlockers) || !job.dispatchBlockers.every((b) => typeof b === "string" && b.length <= 50))) {
+          return Response.json({ error: `Job ${job.groupKey}: dispatchBlockers must be an array of codes` }, { status: 400 });
+        }
       }
       if (!Array.isArray(job.items)) {
         return Response.json({ error: `Job ${job.groupKey} is missing an items array` }, { status: 400 });
@@ -130,6 +157,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             fulfilmentChannel: job.fulfilmentChannel,
             readiness: job.readiness || null,
             kanbanCol: job.kanbanCol || null,
+            // v1 clearance; null (= unknown, never cleared) for older clients.
+            // Refreshed on every full snapshot.
+            paymentStatus: v1 ? job.paymentStatus ?? null : null,
+            shippingStatus: v1 ? job.shippingStatus ?? null : null,
+            dispatchClearance: v1 ? job.dispatchClearance ?? null : null,
+            dispatchBlockers: v1 && job.dispatchBlockers ? JSON.stringify(job.dispatchBlockers) : null,
             itemCount: job.itemCount ?? job.items.length,
             totalSale: job.totalSale ?? 0,
             shippingPaid: job.shippingPaid ?? 0,
@@ -144,6 +177,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             fulfilmentChannel: job.fulfilmentChannel,
             readiness: job.readiness || null,
             kanbanCol: job.kanbanCol || null,
+            // v1 clearance; null (= unknown, never cleared) for older clients.
+            // Refreshed on every full snapshot.
+            paymentStatus: v1 ? job.paymentStatus ?? null : null,
+            shippingStatus: v1 ? job.shippingStatus ?? null : null,
+            dispatchClearance: v1 ? job.dispatchClearance ?? null : null,
+            dispatchBlockers: v1 && job.dispatchBlockers ? JSON.stringify(job.dispatchBlockers) : null,
             itemCount: job.itemCount ?? job.items.length,
             totalSale: job.totalSale ?? 0,
             shippingPaid: job.shippingPaid ?? 0,
@@ -194,7 +233,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       `deleted_jobs=${result.deletedJobs} deleted_items=${result.deletedItems}`,
     );
 
-    return Response.json({ success: true, jobsReceived: jobs.length, itemsReceived: incomingPurchaseIds.length, ...result });
+    return Response.json({
+      success: true,
+      prepackingContractVersion: PREPACKING_CONTRACT_VERSION,
+      jobsReceived: jobs.length,
+      itemsReceived: incomingPurchaseIds.length,
+      ...result,
+    });
   } catch (error: any) {
     console.error("[trademe-sync] Failed to process sync:", error);
     return Response.json({ error: error.message ?? "Unknown error" }, { status: 500 });
@@ -277,6 +322,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const events = page.slice(0, limit);
 
   return Response.json({
+    // Advertised only now that storage, packing, revalidation and the
+    // send-status display all support it (see docs/trademe-sync.md).
+    prepackingContractVersion: PREPACKING_CONTRACT_VERSION,
     events: events.map(serialiseEvent),
     cursor: encodeCursor(events.length ? events[events.length - 1].id : after),
     hasMore,

@@ -80,6 +80,12 @@ model TradeMeJob {
   totalSale         Float    @default(0)
   shippingPaid      Float    @default(0)
   paidTotal         Float?
+  // Prepacking contract v1 (null when the local app didn't send v1). These
+  // say whether the parcel may be SENT, not whether it may be packed.
+  paymentStatus     String? // e.g. paid | partially_paid | not_paid | unknown
+  shippingStatus    String? // e.g. correct | manually_approved | missing | underpaid | overpaid | refunded
+  dispatchClearance String? // cleared | blocked
+  dispatchBlockers  String? // JSON array of blocker codes
   lastSyncedAt      DateTime @updatedAt
   items             TradeMeJobItem[]
 
