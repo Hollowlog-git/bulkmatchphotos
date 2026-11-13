@@ -147,7 +147,17 @@ data:
 - every Shopify order must still be open, uncancelled and unfulfilled, with
   the same lines and quantities.
 
-Otherwise nothing is recorded, and the packer is told to Refresh.
+Otherwise nothing is recorded, and the packer is told to Refresh. Each
+refusal carries a `code`:
+- `already_packed`: Pack Check has already recorded it as packed. This is
+  checked first, so an item that was packed and then dropped from the next
+  sync isn't reported as a problem.
+- `not_in_latest_sync`: missing from the latest sync. Central doesn't know
+  why (it may have been packed in the local app, or no longer be ready), so
+  it doesn't guess.
+- `moved_parcel`, `quantity_changed`, `new_item`: the parcel changed.
+- `not_found`, `cancelled`, `fulfilled`, `order_changed`: the Shopify order
+  changed.
 
 **Trade Me sales channel.** A Shopify order counts as Trade Me only when both
 of these hold:
