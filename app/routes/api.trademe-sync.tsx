@@ -4,6 +4,7 @@ import db from "../db.server";
 import { sanitiseTradeMeImageUrl } from "../lib/tradeMeImage";
 import { decodeCursor, encodeCursor, serialiseEvent, tradeMeChannelAppIds } from "../lib/packEvents";
 import { reportPendingShopifyOrders } from "../lib/shopifyOrderEvents.server";
+import { repairMissingUnpackedEvents } from "../lib/unpack.server";
 import { unauthenticated } from "../shopify.server";
 
 interface IncomingItem {
@@ -242,6 +243,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
     return Response.json({ error: `limit must be an integer from 1 to ${MAX_LIMIT}` }, { status: 400 });
   }
+
+  // Write any "unpacked" events an earlier undo missed (see lib/unpack.server.ts).
+  const repairedUnpacked = await repairMissingUnpackedEvents(shop);
+  if (repairedUnpacked) console.log(`[trademe-sync] repaired ${repairedUnpacked} missing unpacked event(s)`);
 
   // Report packed Shopify orders that haven't been reported yet (including
   // ones packed before the Trade Me channel was configured), so they're in

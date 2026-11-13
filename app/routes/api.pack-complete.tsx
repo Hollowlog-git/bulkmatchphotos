@@ -3,6 +3,12 @@ import { authenticate } from "../shopify.server";
 import crypto from "node:crypto";
 import db from "../db.server";
 import { channelFields, fetchLiveOrders, reportPendingShopifyOrders, type LiveOrder } from "../lib/shopifyOrderEvents.server";
+import { writeUnpackedEvents } from "../lib/unpack.server";
+
+async function purchaseIdsInPackages(shop: string): Promise<Set<string>> {
+  const pkgs = await db.packedPackage.findMany({ where: { shop }, select: { purchaseIds: true } });
+  return new Set(pkgs.flatMap((p) => JSON.parse(p.purchaseIds) as string[]));
+}
 import {
   checkShopifyOrders, checkTradeMePurchases,
   type Conflict, type SubmittedOrder, type SubmittedPurchase,
@@ -78,8 +84,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Trade Me items packed without a package record (the first Trade Me
+  // version's "Mark Trade Me job as packed" button), grouped by parcel, so
+  // they can be seen and undone too.
+  const since = new Date(Date.now() - PACKED_VIEW_DAYS * 86400000);
+  const inPackages = await purchaseIdsInPackages(shop);
+  const loose = (await db.tradeMePackedItem.findMany({ where: { shop, packedAt: { gt: since } }, orderBy: { packedAt: "desc" } }))
+    .filter((r) => !inPackages.has(r.purchaseId));
+  const byParcel = new Map<string, typeof loose>();
+  for (const r of loose) byParcel.set(r.groupKey, [...(byParcel.get(r.groupKey) ?? []), r]);
+  const jobs = await db.tradeMeJob.findMany({ where: { shop, groupKey: { in: [...byParcel.keys()] } } });
+  const legacy = [...byParcel.entries()].map(([groupKey, rows]) => {
+    const job = jobs.find((j) => j.groupKey === groupKey);
+    return {
+      groupKey,
+      packedAt: rows[0].packedAt.toISOString(),
+      purchaseIds: rows.map((r) => r.purchaseId),
+      buyer: job ? job.buyerName || job.buyerUsername : null,
+    };
+  });
+
   return Response.json({
     days: PACKED_VIEW_DAYS,
+    legacy,
     packages: packages
       .map((p) => {
         const orderIds = JSON.parse(p.shopifyOrderIds) as string[];
@@ -110,25 +137,40 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const body: any = await request.json();
 
     if (request.method === "DELETE") {
+      // Legacy: Trade Me items packed without a package record (the first
+      // Trade Me version's "Mark Trade Me job as packed"), undone by parcel.
+      if (typeof body?.legacyGroupKey === "string") {
+        const groupKey = body.legacyGroupKey;
+        const inPackages = await purchaseIdsInPackages(shop);
+        const rows = (await db.tradeMePackedItem.findMany({ where: { shop, groupKey } })).filter((r) => !inPackages.has(r.purchaseId));
+        if (!rows.length) return Response.json({ error: "Nothing packed to undo for that parcel" }, { status: 404 });
+        const purchaseIds = rows.map((r) => r.purchaseId);
+        const unpacked = await db.$transaction(async (tx) => {
+          const n = await writeUnpackedEvents(tx, shop, { purchaseIds, orderIds: [], packageId: null });
+          await tx.tradeMePackedItem.deleteMany({ where: { shop, purchaseId: { in: purchaseIds } } });
+          return n;
+        });
+        console.log(`[pack-complete] undo legacy shop=${shop} groupKey=${groupKey} purchases=${purchaseIds.join(",")} unpackedEvents=${unpacked}`);
+        return Response.json({ success: true, unpackedEvents: unpacked });
+      }
+
       const pkg = typeof body?.packageId === "string"
         ? await db.packedPackage.findFirst({ where: { id: body.packageId, shop } })
         : null;
       if (!pkg) return Response.json({ error: "Packed package not found" }, { status: 404 });
       const orderIds = JSON.parse(pkg.shopifyOrderIds) as string[];
       const purchaseIds = JSON.parse(pkg.purchaseIds) as string[];
-      // Tell the local app about the undo for everything it was told was packed.
-      const told = await db.packEvent.findMany({ where: { shop, packageId: pkg.id, action: "packed" } });
-      await db.$transaction([
-        ...told.map((e) => db.packEvent.create({
-          data: { shop, kind: e.kind, action: "unpacked", packageId: pkg.id, purchaseId: e.purchaseId, groupKey: e.groupKey,
-            quantity: e.quantity, orderId: e.orderId, orderName: e.orderName, salesRecordId: e.salesRecordId, lineItems: e.lineItems },
-        })),
-        db.packedOrder.deleteMany({ where: { shop, orderId: { in: orderIds } } }),
-        db.tradeMePackedItem.deleteMany({ where: { shop, purchaseId: { in: purchaseIds } } }),
-        db.packedPackage.delete({ where: { id: pkg.id } }),
-      ]);
-      console.log(`[pack-complete] undo shop=${shop} package=${pkg.label}`);
-      return Response.json({ success: true });
+      // Tell the local app about the undo for every purchase and order in the
+      // package that it was told was packed, however that event was tagged.
+      const unpacked = await db.$transaction(async (tx) => {
+        const n = await writeUnpackedEvents(tx, shop, { purchaseIds, orderIds, packageId: pkg.id });
+        await tx.packedOrder.deleteMany({ where: { shop, orderId: { in: orderIds } } });
+        await tx.tradeMePackedItem.deleteMany({ where: { shop, purchaseId: { in: purchaseIds } } });
+        await tx.packedPackage.delete({ where: { id: pkg.id } });
+        return n;
+      });
+      console.log(`[pack-complete] undo shop=${shop} package=${pkg.label} unpackedEvents=${unpacked}`);
+      return Response.json({ success: true, unpackedEvents: unpacked });
     }
 
     if (request.method !== "POST") {

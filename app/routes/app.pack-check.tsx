@@ -9,7 +9,7 @@ import { assignPackKeys } from "../lib/tradeMeMerge";
 import { Thumb } from "../components/Thumb";
 import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
-import { PackedList, type PackedPackageView } from "../components/PackedList";
+import { PackedList, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -110,6 +110,7 @@ export default function PackCheck() {
   const [view, setView] = useState<"topack" | "packed">("topack");
   const viewRef = useRef<"topack" | "packed">("topack");
   const [packed, setPacked] = useState<PackedPackageView[]>([]);
+  const [legacyPacked, setLegacyPacked] = useState<LegacyPackedParcel[]>([]);
   const [packedDays, setPackedDays] = useState(14);
   const [packedLoading, setPackedLoading] = useState(false);
   const [packedError, setPackedError] = useState<string | null>(null);
@@ -349,6 +350,7 @@ export default function PackCheck() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
       setPacked(data.packages ?? []);
+      setLegacyPacked(data.legacy ?? []);
       setPackedDays(data.days ?? 14);
       setPackedError(null);
     } catch (e: any) {
@@ -378,6 +380,25 @@ export default function PackCheck() {
       if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
       setPacked(ps => ps.filter(p => p.id !== pkg.id));
       fetchOrders(false);
+    } catch (e: any) {
+      setPackedError(`Couldn't undo (${e.message}).`);
+    } finally {
+      setUndoingId(null);
+    }
+  }
+
+  async function undoLegacyPacked(parcel: LegacyPackedParcel) {
+    if (!confirm(`Undo packed for ${parcel.buyer ?? `parcel ${parcel.groupKey}`} (${parcel.purchaseIds.length} Trade Me items)? They come back to "To pack" after the local app's next sync.`)) return;
+    setUndoingId(`legacy:${parcel.groupKey}`);
+    try {
+      const res = await fetch("/api/pack-complete", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ legacyGroupKey: parcel.groupKey }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setLegacyPacked(ls => ls.filter(l => l.groupKey !== parcel.groupKey));
     } catch (e: any) {
       setPackedError(`Couldn't undo (${e.message}).`);
     } finally {
@@ -802,7 +823,7 @@ export default function PackCheck() {
               <Text variant="headingLg" as="h1">Pack Check</Text>
               <ButtonGroup variant="segmented">
                 <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
-                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${packed.length})`}</Button>
+                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${packed.length + legacyPacked.length})`}</Button>
               </ButtonGroup>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -825,7 +846,7 @@ export default function PackCheck() {
 
         {view === "packed" && (
           <Layout.Section>
-            <PackedList packages={packed} days={packedDays} loading={packedLoading} error={packedError} undoingId={undoingId} onUndo={undoPacked} />
+            <PackedList packages={packed} legacy={legacyPacked} days={packedDays} loading={packedLoading} error={packedError} undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} />
           </Layout.Section>
         )}
 
