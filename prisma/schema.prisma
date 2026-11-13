@@ -121,3 +121,19 @@ model TradeMePackedItem {
   @@unique([shop, purchaseId])
   @@index([shop, packedAt])
 }
+
+// Shopify orders whose package was fully scanned in Pack Check. Pack Check
+// no longer fulfils orders in Shopify; it records them here instead, hides
+// them from its list, and reports them to the local Trade Me app via
+// GET /api/trademe-sync. Kept indefinitely: deleting a row would make a
+// still-unfulfilled order reappear in Pack Check.
+model PackedOrder {
+  id        String   @id @default(cuid())
+  shop      String
+  orderId   String // Shopify order GID
+  orderName String // e.g. "#6853" or "SO4392"
+  packedAt  DateTime @default(now())
+
+  @@unique([shop, orderId])
+  @@index([shop, packedAt])
+}

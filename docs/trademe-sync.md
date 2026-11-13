@@ -76,8 +76,16 @@ usually a bug. When nothing really is ready to pack, send
 ## 2. Read back packed items (`GET /api/trademe-sync?since=<ISO date>`)
 
 ```json
-{ "packed": [ { "purchaseId": "987654321", "groupKey": "buyer-123456", "packedAt": "2026-11-08T03:12:00.000Z" } ] }
+{
+  "packed": [ { "purchaseId": "987654321", "groupKey": "buyer-123456", "packedAt": "2026-11-08T03:12:00.000Z" } ],
+  "packedShopifyOrders": [ { "orderId": "gid://shopify/Order/123", "orderName": "SO4392", "packedAt": "2026-11-08T03:12:00.000Z" } ]
+}
 ```
+
+`packedShopifyOrders` lists Shopify orders packed in Pack Check. Pack Check
+does **not** fulfil anything in Shopify. These orders stay unfulfilled there
+until something else fulfils them, such as the local app at dispatch or the
+Trade Me sales channel. Pack Check hides them from its own list.
 
 Mark those purchases packed or dispatched in the local app, then stop
 including them in pushes. Pass the newest `packedAt` you've seen as `since`
@@ -112,7 +120,11 @@ ready. If the read fails, skip the push.
 Trade Me jobs only appear when the **"Clearance week"** toggle in the top
 bar is on. It's off by default, because Trade Me sales may also reach Shopify as
 orders through the Trade Me sales channel and would then show twice.
-Packing a Trade Me job records its items as packed. It never touches Shopify.
+A package is recorded as packed when every item is scanned and you press
+**Space**, **Next Order** or the **📦 Packed — Next Order →** button. A package
+that isn't fully scanned is skipped without being recorded. Recording never
+touches Shopify. If recording fails, Pack Check stays on the package and shows
+an error.
 
 ### Combining with Shopify orders
 

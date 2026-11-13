@@ -102,8 +102,9 @@ export default function PackCheck() {
   const [scanMsg, setScanMsg] = useState<{ text: string; tone: "success" | "critical" | "warning" | "" }>({ text: "", tone: "" });
   const [filter, setFilter] = useState<"all" | "remaining" | "done">("all");
   const [history, setHistory] = useState<string[]>([]);
-  const [fulfilling, setFulfilling] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [fulfillMsg, setFulfillMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const movingRef = useRef(false);
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
   });
@@ -264,25 +265,46 @@ export default function PackCheck() {
     else selectOrder("");
   }
 
-  function moveToNextOrder() {
-    const allOrders = ordersRef.current;
-    const currentCustomer = selectValueRef.current;
-    if (!allOrders.length) return;
-    const groups = groupPackages(allOrders);
-    const sorted = [...groups.entries()].sort((a, b) => {
-      const aDate = Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
-      const bDate = Math.max(...b[1].map(o => new Date(o.createdAt).getTime()));
-      return bDate - aDate;
-    });
-    const customers = sorted.map(([c]) => c);
-    const nextIdx = customers.indexOf(currentCustomer) + 1;
-    if (nextIdx < customers.length) {
+  // Next Order / Space. If every item in the current package is scanned
+  // (and nothing over-scanned), it's recorded as packed first and removed
+  // from the list; if recording fails, we stay put so nothing is lost.
+  async function moveToNextOrder() {
+    if (movingRef.current) return;
+    movingRef.current = true;
+    try {
+      const allOrders = ordersRef.current;
+      const currentKey = selectValueRef.current;
+      if (!allOrders.length) return;
+      const groups = groupPackages(allOrders);
+      const sorted = [...groups.entries()].sort(newestFirst);
+      const keys = sorted.map(([k]) => k);
+      const next = sorted[keys.indexOf(currentKey) + 1];
+
+      const items = packItemsRef.current;
+      const complete = !!currentKey && items.length > 0 && items.every(i => i.scanned === i.quantity);
+      let remaining = allOrders;
+      let packedLabel = "";
+      if (complete) {
+        const pkg = groups.get(currentKey) ?? [];
+        if (!(await recordPacked(pkg))) return;
+        const ids = new Set(pkg.map(o => o.id));
+        remaining = allOrders.filter(o => !ids.has(o.id));
+        ordersRef.current = remaining;
+        setOrders(remaining);
+        packedLabel = `✓ Packed ${packLabel(pkg)} · `;
+      }
+
       clearSession();
       setFulfillMsg(null);
-      selectOrderByCustomer(customers[nextIdx], allOrders);
-      setScanMsg({ text: `→ Moved to ${packLabel(sorted[nextIdx][1])}`, tone: "success" });
-    } else {
-      setScanMsg({ text: "No more orders!", tone: "warning" });
+      if (next) {
+        selectOrderByCustomer(next[0], remaining);
+        setScanMsg({ text: `${packedLabel}→ Moved to ${packLabel(next[1])}`, tone: "success" });
+      } else {
+        if (complete) selectOrder("");
+        setScanMsg({ text: `${packedLabel}No more orders!`, tone: complete ? "success" : "warning" });
+      }
+    } finally {
+      movingRef.current = false;
     }
   }
 
@@ -311,49 +333,33 @@ export default function PackCheck() {
   }
 
   // ── FULFILLMENT ───────────────────────────────────────────────────────────
-  async function fulfillOrders() {
-    // Trade Me jobs never go to Shopify — they're recorded as packed here and
-    // the local Trade Me app picks that up on its next read.
-    const orderIds = selectedOrders.filter(o => !o.tradeMe).map(o => o.id);
-    const tmPurchases = selectedOrders.flatMap(o =>
+  // Records a fully scanned package as packed. Nothing is fulfilled in
+  // Shopify: Shopify orders are recorded (and hidden from Pack Check), Trade
+  // Me purchases are recorded, and the local Trade Me app reads both back on
+  // its next "Sync central Pack Check".
+  async function recordPacked(pkgOrders: Order[]): Promise<boolean> {
+    const shopifyOrders = pkgOrders.filter(o => !o.tradeMe).map(o => ({ id: o.id, name: o.name }));
+    const tradeMePurchases = pkgOrders.flatMap(o =>
       o.tradeMe ? o.tradeMe.purchaseIds.map(purchaseId => ({ purchaseId, groupKey: o.tradeMe!.groupKey })) : []);
-    if (!orderIds.length && !tmPurchases.length) { setFulfillMsg({ text: "No orders selected.", ok: false }); return; }
-    setFulfilling(true);
+    if (!shopifyOrders.length && !tradeMePurchases.length) return true;
+    setRecording(true);
     setFulfillMsg(null);
     try {
-      const done: string[] = [];
-      if (tmPurchases.length) {
-        const tmRes = await fetch("/api/trademe-jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ purchases: tmPurchases }),
-        });
-        const tmData = await tmRes.json();
-        if (tmData.error) { setFulfillMsg({ text: `❌ Trade Me: ${tmData.error}`, ok: false }); return; }
-        done.push("Trade Me items marked packed");
-      }
-      let data: any = {};
-      if (orderIds.length) {
-        const res = await fetch("/api/fulfill", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ orderIds }),
-        });
-        data = await res.json();
-        if (!data.error) done.push("Shopify orders fulfilled");
-      }
-      if (data.error) {
-        setFulfillMsg({ text: `❌ ${done.length ? done.join(", ") + ", but Shopify failed: " : ""}${data.error}`, ok: false });
-        if (done.length) setTimeout(() => fetchOrders(false), 2000);
-      } else {
-        setFulfillMsg({ text: `✅ ${done.join(" · ")}`, ok: true });
-        clearSession();
-        setTimeout(() => fetchOrders(false), 2000);
-      }
+      const res = await fetch("/api/pack-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shopifyOrders, tradeMePurchases }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      return true;
     } catch (e: any) {
-      setFulfillMsg({ text: `❌ ${e.message}`, ok: false });
+      const text = `❌ Couldn't record as packed (${e.message}). Still on this order — try again.`;
+      setFulfillMsg({ text, ok: false });
+      setScanMsg({ text, tone: "critical" });
+      return false;
     } finally {
-      setFulfilling(false);
+      setRecording(false);
     }
   }
 
@@ -488,7 +494,6 @@ export default function PackCheck() {
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
   const hasSignature = selectedOrders.some(o => !o.tradeMe && isSignatureShipping(o));
   const tradeMeAddress = !shippingAddress ? selectedOrders.find(o => o.deliveryAddressText)?.deliveryAddressText ?? null : null;
-  const onlyTradeMe = selectedOrders.length > 0 && selectedOrders.every(o => o.tradeMe);
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
@@ -817,14 +822,9 @@ export default function PackCheck() {
                   </div>
                 </div>
                 <InlineStack gap="200">
-                  <Button
-                    variant="primary" size="large"
-                    loading={fulfilling}
-                    onClick={fulfillOrders}
-                  >
-                    {onlyTradeMe ? "📦 Mark Trade Me job as packed" : "🚚 Mark as Fulfilled & Notify Customer"}
+                  <Button variant="primary" size="large" loading={recording} onClick={moveToNextOrder}>
+                    📦 Packed — Next Order →
                   </Button>
-                  <Button size="large" onClick={moveToNextOrder}>Next Order →</Button>
                 </InlineStack>
               </div>
               {fulfillMsg && (
