@@ -125,6 +125,9 @@ export default function PackCheck() {
     try { return localStorage.getItem("packcheck_trademe") === "1"; } catch { return false; }
   });
   const includeTradeMeRef = useRef(includeTradeMe);
+  // Number of CLEAR items the local Trade Me app is currently sending. The
+  // Clearance week controls only appear while there are some.
+  const [clearanceCount, setClearanceCount] = useState(0);
   const [tradeMeError, setTradeMeError] = useState<string | null>(null);
   // Set when Shopify had more open orders than /api/orders loads (150).
   const [ordersCapped, setOrdersCapped] = useState<number | null>(null);
@@ -218,14 +221,21 @@ export default function PackCheck() {
       let fetched: Order[] = data.orders ?? [];
       setOrdersCapped(data.truncated ? (data.maxOrders ?? fetched.length) : null);
       setTradeMeError(null);
-      if (includeTradeMeRef.current) {
-        try {
-          const tmRes = await fetch("/api/trademe-jobs");
-          if (!tmRes.ok) throw new Error(`HTTP ${tmRes.status}`);
-          const tmData = await tmRes.json();
-          fetched = assignPackKeys([...fetched, ...(tmData.orders ?? [])]);
-        } catch (e: any) {
-          console.error("Failed to fetch Trade Me jobs", e);
+      // Always check what the local Trade Me app has sent (a quick database
+      // read, no Shopify call), so the Clearance week button can appear only
+      // when CLEAR items are waiting. They're added to the list only while
+      // Clearance week is on.
+      try {
+        const tmRes = await fetch("/api/trademe-jobs");
+        if (!tmRes.ok) throw new Error(`HTTP ${tmRes.status}`);
+        const tmData = await tmRes.json();
+        const tmOrders: Order[] = tmData.orders ?? [];
+        setClearanceCount(tmOrders.reduce((n, o) =>
+          n + o.lineItems.filter(li => /^CLEAR-/i.test(li.sku || "")).reduce((q, li) => q + li.quantity, 0), 0));
+        if (includeTradeMeRef.current) fetched = assignPackKeys([...fetched, ...tmOrders]);
+      } catch (e: any) {
+        console.error("Failed to fetch Trade Me jobs", e);
+        if (includeTradeMeRef.current) {
           setTradeMeError(`Couldn't load Trade Me jobs (${e.message}). Showing Shopify orders only.`);
         }
       }
@@ -827,7 +837,11 @@ export default function PackCheck() {
               </ButtonGroup>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
+              {clearanceCount > 0 && (
+                <Button onClick={toggleTradeMe} pressed={includeTradeMe}>
+                  {`${includeTradeMe ? "✓ " : ""}Clearance week (${clearanceCount})`}
+                </Button>
+              )}
               <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
               <button
                 type="button"
