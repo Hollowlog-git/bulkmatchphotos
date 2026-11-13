@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node"
 import crypto from "node:crypto";
 import db from "../db.server";
 import { sanitiseTradeMeImageUrl } from "../lib/tradeMeImage";
+import { decodeCursor, encodeCursor, serialiseEvent, tradeMeChannelAppIds } from "../lib/packEvents";
 
 interface IncomingItem {
   purchaseId: string;
@@ -197,12 +198,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 };
 
-// GET: the local app reads back what Pack Check has marked packed, so it can
-// mark those purchases packed/dispatched on its side. Optional ?since=<ISO>
-// returns only items packed after that time. Also returns Shopify orders
-// packed in Pack Check (packedShopifyOrders), which are kept indefinitely.
-// Trade Me packed items older than 30 days are
-// pruned here, by which point the local app has long since processed them.
+// GET: the local app reads back what Pack Check has packed.
+//
+// Event stream (preferred): GET ?after=<cursor>&limit=<1-500, default 200>
+//   -> { events: [...], cursor, hasMore }
+//   Events are returned in a strict order; `cursor` is the position of the
+//   last event in this page (or the cursor you sent, if the page is empty).
+//   Store it after processing the page and send it back as `after` to get
+//   the next page; repeat while hasMore is true. Omit `after` to start from
+//   the beginning. Events are never deleted, so replaying from the start
+//   is always possible. See lib/packEvents.ts for the event shapes.
+//
+// Legacy fields (unchanged for existing clients; ?since=<ISO> filters them):
+//   packed:              Trade Me purchases recorded as packed
+//   packedShopifyOrders: packed Shopify orders from the confirmed Trade Me
+//                        channel only (none while it isn't configured)
+const DEFAULT_LIMIT = 200;
+const MAX_LIMIT = 500;
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!authorised(request)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -212,25 +225,40 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return Response.json({ error: "Server misconfigured: SHOP_DOMAIN not set" }, { status: 500 });
   }
 
-  const sinceRaw = new URL(request.url).searchParams.get("since");
+  const params = new URL(request.url).searchParams;
+  const sinceRaw = params.get("since");
   const since = sinceRaw ? new Date(sinceRaw) : null;
   if (since && Number.isNaN(since.getTime())) {
     return Response.json({ error: "since must be an ISO date" }, { status: 400 });
   }
+  const after = decodeCursor(params.get("after"));
+  if (after === null) {
+    return Response.json({ error: "Invalid cursor: send back the cursor value exactly as received" }, { status: 400 });
+  }
+  const limitRaw = params.get("limit");
+  const limit = limitRaw === null ? DEFAULT_LIMIT : Number(limitRaw);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_LIMIT) {
+    return Response.json({ error: `limit must be an integer from 1 to ${MAX_LIMIT}` }, { status: 400 });
+  }
 
-  await db.tradeMePackedItem.deleteMany({
-    where: { shop, packedAt: { lt: new Date(Date.now() - 30 * 86400000) } },
-  });
-
+  const channelIds = tradeMeChannelAppIds();
   const packedWhere = { shop, ...(since ? { packedAt: { gt: since } } : {}) };
-  const [packed, packedOrders] = await Promise.all([
+  const [page, packed, packedOrders] = await Promise.all([
+    db.packEvent.findMany({ where: { shop, id: { gt: after } }, orderBy: { id: "asc" }, take: limit + 1 }),
     db.tradeMePackedItem.findMany({ where: packedWhere, orderBy: { packedAt: "asc" } }),
-    db.packedOrder.findMany({ where: packedWhere, orderBy: { packedAt: "asc" } }),
+    channelIds.length
+      ? db.packedOrder.findMany({ where: { ...packedWhere, channelAppId: { in: channelIds } }, orderBy: { packedAt: "asc" } })
+      : Promise.resolve([]),
   ]);
+  const hasMore = page.length > limit;
+  const events = page.slice(0, limit);
 
   return Response.json({
+    events: events.map(serialiseEvent),
+    cursor: encodeCursor(events.length ? events[events.length - 1].id : after),
+    hasMore,
+    tradeMeChannelConfigured: channelIds.length > 0,
     packed: packed.map((p) => ({ purchaseId: p.purchaseId, groupKey: p.groupKey, packedAt: p.packedAt.toISOString() })),
-    // Shopify orders packed in Pack Check (they are not fulfilled in Shopify).
     packedShopifyOrders: packedOrders.map((o) => ({ orderId: o.orderId, orderName: o.orderName, packedAt: o.packedAt.toISOString() })),
   });
 };

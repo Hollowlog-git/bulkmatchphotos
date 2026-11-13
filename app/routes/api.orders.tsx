@@ -87,6 +87,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
                       id
                       title
                       quantity
+                      currentQuantity
                       product {
                         id
                         handle
@@ -211,10 +212,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           discountCodes,
           shippingAddress,
           fulfillmentOrders: [],
-          lineItems: o.lineItems.edges.map((le: any) => ({
+          // currentQuantity = what's still to send after refunds/removals;
+          // fully removed lines are left out of the pick list.
+          lineItems: o.lineItems.edges.filter((le: any) => (le.node.currentQuantity ?? le.node.quantity) > 0).map((le: any) => ({
             id: le.node.id,
             title: le.node.title,
-            quantity: le.node.quantity,
+            quantity: le.node.currentQuantity ?? le.node.quantity,
             sku: le.node.variant?.sku ?? "",
             variantTitle: le.node.variant?.title,
             imageUrl: le.node.variant?.product?.featuredImage?.url ?? null,

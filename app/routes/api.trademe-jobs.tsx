@@ -1,6 +1,7 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { isPickableSku } from "../lib/tradeMeItems";
 
 // Pack Check's view of the Trade Me jobs pushed by the local app
 // (see api.trademe-sync.tsx). Jobs are returned in the same shape as
@@ -13,10 +14,6 @@ import db from "../db.server";
 
 const TRADEME_ID_PREFIX = "trademe:";
 
-function isPickableSku(sku: string | null): boolean {
-  const s = (sku ?? "").trim();
-  return s.length > 0 && !s.toUpperCase().startsWith("TV|");
-}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
