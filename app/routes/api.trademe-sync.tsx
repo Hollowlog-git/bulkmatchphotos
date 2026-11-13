@@ -247,7 +247,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.packEvent.findMany({ where: { shop, id: { gt: after } }, orderBy: { id: "asc" }, take: limit + 1 }),
     db.tradeMePackedItem.findMany({ where: packedWhere, orderBy: { packedAt: "asc" } }),
     channelIds.length
-      ? db.packedOrder.findMany({ where: { ...packedWhere, channelAppId: { in: channelIds } }, orderBy: { packedAt: "asc" } })
+      ? db.packedOrder.findMany({ where: { ...packedWhere, channelAppId: { in: channelIds }, hasTradeMeTag: true }, orderBy: { packedAt: "asc" } })
       : Promise.resolve([]),
   ]);
   const hasMore = page.length > limit;
