@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Page, Layout, Card, Text, Button, ButtonGroup, Select, TextField,
+  Page, Layout, Card, Text, Button, ButtonGroup, TextField,
   Badge, ProgressBar, Divider, InlineStack, BlockStack, Box, EmptyState, Spinner,
 } from "@shopify/polaris";
 import { normaliseSku, resolveDrawerNumber, type DrawerRangeConfig } from "../lib/sku";
@@ -8,6 +8,7 @@ import { findCustomerNote, type CustomerNoteRecord } from "../lib/customerNotes"
 import { assignPackKeys } from "../lib/tradeMeMerge";
 import { Thumb } from "../components/Thumb";
 import { buildPackItems } from "../lib/packItems";
+import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -642,7 +643,7 @@ export default function PackCheck() {
 
   const groupedOptions = () => {
     const groups = groupPackages(orders);
-    const options: { label: string; value: string }[] = [{ label: "— Select an order —", value: "" }];
+    const options: OrderPickerOption[] = [];
     const sorted = [...groups.entries()].sort((a, b) => {
       const aDate = Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
       const bDate = Math.max(...b[1].map(o => new Date(o.createdAt).getTime()));
@@ -662,6 +663,12 @@ export default function PackCheck() {
       options.push({
         label: `${customer} — ${orderLabel}${linked ? " + Trade Me" : ""} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}`,
         value: packKey,
+        // Everything the search box matches against.
+        search: customerOrders
+          .flatMap(o => [o.customer, o.name, o.customerEmail ?? "", o.tradeMe?.buyerUsername ?? ""])
+          .join(" ")
+          .toLowerCase()
+          .replace(/#/g, " "),
       });
     }
     return options;
@@ -705,7 +712,7 @@ export default function PackCheck() {
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ flex: "1 1 300px", minWidth: 0 }}>
               {loadingOrders ? <InlineStack align="start"><Spinner size="small" /></InlineStack> : (
-                <Select label="" labelHidden options={groupedOptions()} value={selectValue} onChange={selectOrder} />
+                <OrderPicker options={groupedOptions()} value={selectValue} onSelect={selectOrder} />
               )}
             </div>
             {packItems.length > 0 && (
