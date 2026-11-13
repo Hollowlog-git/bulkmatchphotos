@@ -133,6 +133,11 @@ model PackedOrder {
   orderId   String // Shopify order GID
   orderName String // e.g. "#6853" or "SO4392"
   packedAt  DateTime @default(now())
+  // Sales-channel identity read from Shopify at pack time. Only orders whose
+  // app matches TRADEME_SHOPIFY_CHANNEL_APP_ID are reported to the local app.
+  channelAppId  String?
+  channelHandle String?
+  channelName   String?
 
   @@unique([shop, orderId])
   @@index([shop, packedAt])
@@ -152,4 +157,27 @@ model PackedPackage {
   snapshot        String // JSON: { customer, email, orders: [{ id, name, channel }], items: [{ sku, title, quantity, imageUrl }] }
 
   @@index([shop, packedAt])
+}
+
+// Append-only log of packing acknowledgements for the local Trade Me app,
+// read with GET /api/trademe-sync?after=<cursor>. The autoincrement id gives
+// a strict order with no timestamp ties; the cursor is built from it. Never
+// pruned. "unpacked" events record an undo from Pack Check's Packed view.
+model PackEvent {
+  id         Int      @id @default(autoincrement())
+  shop       String
+  kind       String // "trademe_purchase" | "shopify_order"
+  action     String // "packed" | "unpacked"
+  packageId  String?
+  // kind = trademe_purchase
+  purchaseId String?
+  groupKey   String?
+  quantity   Int?
+  // kind = shopify_order
+  orderId    String?
+  orderName  String?
+  lineItems  String? // JSON: [{ lineItemId, sku, quantity, tradeMePurchaseId }]
+  occurredAt DateTime @default(now())
+
+  @@index([shop, id])
 }

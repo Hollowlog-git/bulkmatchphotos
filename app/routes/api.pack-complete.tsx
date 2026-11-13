@@ -1,6 +1,12 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
+import crypto from "node:crypto";
 import db from "../db.server";
+import { isTradeMeChannel } from "../lib/packEvents";
+import {
+  checkShopifyOrders, checkTradeMePurchases,
+  type Conflict, type SubmittedOrder, type SubmittedPurchase,
+} from "../lib/packValidation";
 
 // Records a fully scanned package as packed. Nothing is fulfilled in
 // Shopify. Shopify orders go into PackedOrder (hidden from Pack Check from
@@ -10,7 +16,11 @@ import db from "../db.server";
 //
 // GET    -> { packages: [...] }  packed in the last PACKED_VIEW_DAYS days and
 //           not yet sent (see loader)
-// POST   { label, snapshot, shopifyOrders: [{ id, name }], tradeMePurchases: [{ purchaseId, groupKey }] }
+// POST   { label, snapshot,
+//          shopifyOrders: [{ id, name, lineItems: [{ id, quantity }] }],
+//          tradeMePurchases: [{ purchaseId, groupKey, quantity }] }
+//        -> 200 { packageId } | 409 { conflicts } if anything changed since
+//           the page loaded (nothing is recorded) | 400 malformed
 // DELETE { packageId }  — undo: the package goes back to "To pack"
 
 const PACKED_VIEW_DAYS = 14;
@@ -92,8 +102,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
+const LIVE_ORDERS_QUERY = `#graphql
+  query PackCompleteOrders($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on Order {
+        id
+        name
+        cancelledAt
+        displayFulfillmentStatus
+        app { id name }
+        channelInformation {
+          app { id title }
+          channelDefinition { handle channelName }
+        }
+        lineItems(first: 100) {
+          nodes { id sku currentQuantity }
+        }
+      }
+    }
+  }`;
+
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
   try {
@@ -106,7 +136,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       if (!pkg) return Response.json({ error: "Packed package not found" }, { status: 404 });
       const orderIds = JSON.parse(pkg.shopifyOrderIds) as string[];
       const purchaseIds = JSON.parse(pkg.purchaseIds) as string[];
+      // Tell the local app about the undo for everything it was told was packed.
+      const told = await db.packEvent.findMany({ where: { shop, packageId: pkg.id, action: "packed" } });
       await db.$transaction([
+        ...told.map((e) => db.packEvent.create({
+          data: { shop, kind: e.kind, action: "unpacked", packageId: pkg.id, purchaseId: e.purchaseId, groupKey: e.groupKey,
+            quantity: e.quantity, orderId: e.orderId, orderName: e.orderName, lineItems: e.lineItems },
+        })),
         db.packedOrder.deleteMany({ where: { shop, orderId: { in: orderIds } } }),
         db.tradeMePackedItem.deleteMany({ where: { shop, purchaseId: { in: purchaseIds } } }),
         db.packedPackage.delete({ where: { id: pkg.id } }),
@@ -119,47 +155,114 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return Response.json({ error: "POST or DELETE only" }, { status: 405 });
     }
 
-    const shopifyOrders: { id: string; name: string }[] = Array.isArray(body?.shopifyOrders)
-      ? body.shopifyOrders.filter((o: any) => typeof o?.id === "string" && o.id.trim() && typeof o?.name === "string")
+    const isStr = (v: any) => typeof v === "string" && v.trim().length > 0;
+    const isQty = (v: any) => Number.isInteger(v) && v > 0;
+    const shopifyOrders: SubmittedOrder[] = Array.isArray(body?.shopifyOrders)
+      ? body.shopifyOrders.filter((o: any) => isStr(o?.id) && typeof o?.name === "string" && Array.isArray(o?.lineItems)
+          && o.lineItems.every((li: any) => isStr(li?.id) && isQty(li?.quantity)))
       : [];
-    const tradeMePurchases: { purchaseId: string; groupKey: string }[] = Array.isArray(body?.tradeMePurchases)
-      ? body.tradeMePurchases.filter((p: any) => typeof p?.purchaseId === "string" && p.purchaseId.trim() && typeof p?.groupKey === "string")
+    const tradeMePurchases: SubmittedPurchase[] = Array.isArray(body?.tradeMePurchases)
+      ? body.tradeMePurchases.filter((p: any) => isStr(p?.purchaseId) && isStr(p?.groupKey) && isQty(p?.quantity))
       : [];
+    const sentOrders = Array.isArray(body?.shopifyOrders) ? body.shopifyOrders.length : 0;
+    const sentPurchases = Array.isArray(body?.tradeMePurchases) ? body.tradeMePurchases.length : 0;
+    if (shopifyOrders.length !== sentOrders || tradeMePurchases.length !== sentPurchases) {
+      return Response.json({ error: "Malformed package: every order needs id, name and line items with quantities; every Trade Me purchase needs purchaseId, groupKey and quantity" }, { status: 400 });
+    }
     if (!shopifyOrders.length && !tradeMePurchases.length) {
       return Response.json({ error: "Nothing to record" }, { status: 400 });
     }
 
-    const [pkg] = await db.$transaction([
+    // ── Revalidate against the latest data ──────────────────────────────
+    const groupKeys = [...new Set(tradeMePurchases.map((p) => p.groupKey))];
+    const purchaseIds = tradeMePurchases.map((p) => p.purchaseId);
+    const [snapshotRows, packedItems, packedOrders] = await Promise.all([
+      db.tradeMeJobItem.findMany({
+        where: { job: { shop }, OR: [{ job: { groupKey: { in: groupKeys } } }, { purchaseId: { in: purchaseIds } }] },
+        include: { job: { select: { groupKey: true } } },
+      }),
+      db.tradeMePackedItem.findMany({ where: { shop }, select: { purchaseId: true } }),
+      db.packedOrder.findMany({ where: { shop, orderId: { in: shopifyOrders.map((o) => o.id) } }, select: { orderId: true } }),
+    ]);
+    const live = new Map<string, any>();
+    if (shopifyOrders.length) {
+      const res = await admin.graphql(LIVE_ORDERS_QUERY, { variables: { ids: shopifyOrders.map((o) => o.id) } });
+      const data: any = await res.json();
+      if (data?.errors) throw new Error("Shopify order check failed");
+      for (const n of data?.data?.nodes ?? []) {
+        if (n?.id) live.set(n.id, { ...n, lineItems: n.lineItems?.nodes ?? [] });
+      }
+    }
+    const conflicts: Conflict[] = [
+      ...checkTradeMePurchases(
+        tradeMePurchases,
+        snapshotRows.map((r) => ({ purchaseId: r.purchaseId, quantity: r.quantity, packed: r.packed, sku: r.sku, groupKey: r.job.groupKey })),
+        new Set(packedItems.map((p) => p.purchaseId)),
+      ),
+      ...checkShopifyOrders(shopifyOrders, live, new Set(packedOrders.map((p) => p.orderId))),
+    ];
+    if (conflicts.length) {
+      console.log(`[pack-complete] refused shop=${shop} conflicts=${JSON.stringify(conflicts)}`);
+      return Response.json({ error: "This package changed since it was loaded", conflicts }, { status: 409 });
+    }
+
+    // ── Record ─────────────────────────────────────────────────────────
+    const packageId = cuidLike();
+    const channelOf = (o: any) => ({
+      channelAppId: o?.app?.id ?? o?.channelInformation?.app?.id ?? null,
+      channelHandle: o?.channelInformation?.channelDefinition?.handle ?? null,
+      channelName: o?.channelInformation?.channelDefinition?.channelName ?? null,
+    });
+    const shopifyEvents = shopifyOrders
+      .map((o) => ({ o, l: live.get(o.id) }))
+      .filter(({ l }) => isTradeMeChannel([l?.app?.id, l?.channelInformation?.app?.id]));
+
+    await db.$transaction([
       db.packedPackage.create({
         data: {
+          id: packageId,
           shop,
           label: str(body?.label, 200) || shopifyOrders.map((o) => o.name).join(", ") || "Trade Me package",
           shopifyOrderIds: JSON.stringify(shopifyOrders.map((o) => o.id)),
-          purchaseIds: JSON.stringify(tradeMePurchases.map((p) => p.purchaseId)),
+          purchaseIds: JSON.stringify(purchaseIds),
           snapshot: JSON.stringify(cleanSnapshot(body?.snapshot)),
         },
       }),
       ...shopifyOrders.map((o) =>
-        db.packedOrder.upsert({
-          where: { shop_orderId: { shop, orderId: o.id } },
-          create: { shop, orderId: o.id, orderName: o.name },
-          update: {},
-        }),
+        db.packedOrder.create({ data: { shop, orderId: o.id, orderName: o.name, ...channelOf(live.get(o.id)) } }),
       ),
       ...tradeMePurchases.map((p) =>
-        db.tradeMePackedItem.upsert({
-          where: { shop_purchaseId: { shop, purchaseId: p.purchaseId } },
-          create: { shop, purchaseId: p.purchaseId, groupKey: p.groupKey },
-          update: {},
+        db.tradeMePackedItem.create({ data: { shop, purchaseId: p.purchaseId, groupKey: p.groupKey } }),
+      ),
+      ...tradeMePurchases.map((p) =>
+        db.packEvent.create({
+          data: { shop, kind: "trademe_purchase", action: "packed", packageId, purchaseId: p.purchaseId, groupKey: p.groupKey, quantity: p.quantity },
+        }),
+      ),
+      ...shopifyEvents.map(({ o, l }) =>
+        db.packEvent.create({
+          data: {
+            shop, kind: "shopify_order", action: "packed", packageId, orderId: o.id, orderName: o.name,
+            // tradeMePurchaseId stays null until the purchase-reference field
+            // is confirmed with the order diagnostic.
+            lineItems: JSON.stringify(
+              (l.lineItems as any[]).filter((li) => li.currentQuantity > 0)
+                .map((li) => ({ lineItemId: li.id, sku: li.sku ?? null, quantity: li.currentQuantity, tradeMePurchaseId: null })),
+            ),
+          },
         }),
       ),
     ]);
     console.log(
-      `[pack-complete] shop=${shop} orders=${shopifyOrders.map((o) => o.name).join(",")} purchases=${tradeMePurchases.map((p) => p.purchaseId).join(",")}`,
+      `[pack-complete] shop=${shop} orders=${shopifyOrders.map((o) => o.name).join(",")} purchases=${purchaseIds.join(",")} shopifyEvents=${shopifyEvents.length}`,
     );
-    return Response.json({ success: true, packageId: pkg.id });
+    return Response.json({ success: true, packageId });
   } catch (error: any) {
     console.error("[pack-complete] failed:", error);
     return Response.json({ error: error.message ?? "Unknown error" }, { status: 500 });
   }
 };
+
+function cuidLike() {
+  return `pkg_${Date.now().toString(36)}${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}

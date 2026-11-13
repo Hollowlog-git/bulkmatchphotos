@@ -26,6 +26,7 @@ export default function App() {
           <s-link href="/app/drafts">Draft photo uploader</s-link>
           <s-link href="/app/drawers">Drawer Setup</s-link>
           <s-link href="/app/customer-notes">Customer Notes</s-link>
+          <s-link href="/app/order-diagnostic">Order diagnostic</s-link>
         </s-app-nav>
 
         <Outlet />

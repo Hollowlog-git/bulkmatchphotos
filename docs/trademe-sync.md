@@ -73,23 +73,94 @@ An empty `jobs` list is refused, because it would remove every job and is
 usually a bug. When nothing really is ready to pack, send
 `{ "jobs": [], "allowEmpty": true }`.
 
-## 2. Read back packed items (`GET /api/trademe-sync?since=<ISO date>`)
+## 2. Read back packing events (`GET /api/trademe-sync?after=<cursor>&limit=<n>`)
+
+Packing in Pack Check is physical work only. It never fulfils, dispatches,
+confirms payment or clears a hold. Each completed package produces events,
+and the local app reads them with a cursor.
 
 ```json
 {
-  "packed": [ { "purchaseId": "987654321", "groupKey": "buyer-123456", "packedAt": "2026-11-08T03:12:00.000Z" } ],
-  "packedShopifyOrders": [ { "orderId": "gid://shopify/Order/123", "orderName": "SO4392", "packedAt": "2026-11-08T03:12:00.000Z" } ]
+  "events": [
+    { "eventId": "41", "type": "packed", "kind": "trademe_purchase", "packageId": "pkg_…",
+      "occurredAt": "2026-11-13T05:00:00.000Z",
+      "purchaseId": "987654321", "groupKey": "job-123", "quantity": 1 },
+    { "eventId": "42", "type": "packed", "kind": "shopify_order", "packageId": "pkg_…",
+      "occurredAt": "2026-11-13T05:00:00.000Z",
+      "orderId": "gid://shopify/Order/123", "orderName": "SO4392",
+      "lineItems": [ { "lineItemId": "gid://shopify/LineItem/9", "sku": "AM-123", "quantity": 1,
+                       "tradeMePurchaseId": null } ] }
+  ],
+  "cursor": "v1.42",
+  "hasMore": false,
+  "tradeMeChannelConfigured": true,
+  "packed": [ … ],
+  "packedShopifyOrders": [ … ]
 }
 ```
 
-`packedShopifyOrders` lists Shopify orders packed in Pack Check. Pack Check
-does **not** fulfil anything in Shopify. These orders stay unfulfilled there
-until something else fulfils them, such as the local app at dispatch or the
-Trade Me sales channel. Pack Check hides them from its own list.
+**Paging and cursor**
+- `after`: omit it to start from the very first event. Otherwise send back
+  the last `cursor` you received, **exactly as received**. The cursor is
+  opaque: don't build, parse or compare it. A malformed cursor gets a 400.
+- `limit`: 1–500, default 200.
+- Events come in a strict order (no timestamp ties). `cursor` is the
+  position of the last event in this response; if there were none, it's the
+  cursor you sent. Save it only after you've durably processed the page.
+  Keep requesting while `hasMore` is true.
+- Re-reading from an older cursor, or from the start, returns the same
+  events again. Events are never deleted, so a full replay is always
+  possible. Apply them idempotently, keyed by `eventId`.
 
-Mark those purchases packed or dispatched in the local app, then stop
-including them in pushes. Pass the newest `packedAt` you've seen as `since`
-next time. Records are kept for 30 days.
+**Event types**
+- `type`: `"packed"`, or `"unpacked"` when someone undoes a mistaken pack
+  from Pack Check's Packed view. An `unpacked` event repeats the fields of
+  the `packed` event it reverses and shares its `packageId`.
+- `kind: "trademe_purchase"`: one Trade Me purchase, matched by
+  `purchaseId`. `groupKey` is the parcel it was packed in. `quantity` is the
+  quantity scanned; it's `null` on events back-filled from before quantities
+  were recorded.
+- `kind: "shopify_order"`: one Shopify order packed in full. `lineItems`
+  lists every line that still had something to send, with that quantity.
+  Shopify order events are only produced for orders from the confirmed
+  Trade Me sales channel (see below), so website orders never appear.
+- `tradeMePurchaseId` is always `null` for now. It will hold the Trade Me
+  purchase ID for that Shopify line once we've confirmed where the Trade Me
+  channel stores it (see the order diagnostic below). Until then, a Shopify
+  order event must not mark any local purchase packed.
+
+**Before a package is recorded**, Pack Check checks it against the latest
+data:
+- every Trade Me purchase must still be in the latest sync, in the same
+  parcel (`groupKey`), with the same quantity, and not already packed;
+- no new pickable item may have joined that parcel since the page loaded;
+- every Shopify order must still be open, uncancelled and unfulfilled, with
+  the same lines and quantities.
+
+Otherwise nothing is recorded, and the packer is told to Refresh.
+
+**Trade Me sales channel.** Set `TRADEME_SHOPIFY_CHANNEL_APP_ID` on the
+Fly app to the GID of the Shopify app that creates Trade Me orders, e.g.
+`gid://shopify/App/123456`; separate several with commas. Confirm the value
+with the order diagnostic, never from order names. While it's unset,
+`tradeMeChannelConfigured` is `false` and no Shopify orders are reported.
+Orders packed while it was unset are never reported later.
+
+**Order diagnostic.** In the Shopify app, open **Order diagnostic** and
+look up one order. It's read-only and admin-only. It shows the order's
+creating app, sales channel, source fields, tags, note, custom attributes,
+metafields and each line's custom attributes, which is where a Trade Me
+purchase or listing reference could be. Customer name, email, phone and
+address are never fetched, and emails and phone numbers in free text are
+redacted.
+
+**Legacy fields** (kept for existing clients; `?since=<ISO>` filters them):
+- `packed`: Trade Me purchases recorded as packed.
+- `packedShopifyOrders`: packed Shopify orders from the confirmed Trade Me
+  channel only.
+
+Both are now kept indefinitely; there's no 30-day expiry. New clients should
+use `events` instead.
 
 ## Example client (Node 18+)
 
@@ -152,8 +223,9 @@ In a combined package:
 - Order value and shipping are shown per source ("Shopify orders" and "Trade
   Me package") and never added together. The $0-shipping warning only shows
   when both sources have $0 shipping.
-- Finishing the package fulfils the Shopify orders as before, and marks packed
-  only the Trade Me purchase IDs that were shown in the package.
+- Finishing the package records it as packed: the Shopify orders shown in it
+  and only the Trade Me purchase IDs shown in it. Nothing is fulfilled in
+  Shopify.
 
 Items with a blank SKU or a `TV|…` reference are not shown as pickable cards.
 

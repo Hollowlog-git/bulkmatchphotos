@@ -390,9 +390,15 @@ export default function PackCheck() {
   // Me purchases are recorded, and the local Trade Me app reads both back on
   // its next "Sync central Pack Check".
   async function recordPacked(pkgOrders: Order[]): Promise<boolean> {
-    const shopifyOrders = pkgOrders.filter(o => !o.tradeMe).map(o => ({ id: o.id, name: o.name }));
+    // Exactly what was loaded and scanned, with quantities, so the server can
+    // check nothing changed since (holds, refunds, new items, fulfilment...).
+    const shopifyOrders = pkgOrders.filter(o => !o.tradeMe).map(o => ({
+      id: o.id, name: o.name, lineItems: o.lineItems.map(li => ({ id: li.id, quantity: li.quantity })),
+    }));
     const tradeMePurchases = pkgOrders.flatMap(o =>
-      o.tradeMe ? o.tradeMe.purchaseIds.map(purchaseId => ({ purchaseId, groupKey: o.tradeMe!.groupKey })) : []);
+      o.tradeMe ? o.lineItems.map(li => ({
+        purchaseId: li.id.replace(/^trademe:/, ""), groupKey: o.tradeMe!.groupKey, quantity: li.quantity,
+      })) : []);
     if (!shopifyOrders.length && !tradeMePurchases.length) return true;
     setRecording(true);
     setFulfillMsg(null);
@@ -414,6 +420,13 @@ export default function PackCheck() {
         }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && Array.isArray(data.conflicts)) {
+        const why = data.conflicts.map((c: any) => `${c.ref}: ${c.reason}`).join("; ");
+        const text = `⚠️ Not recorded: this package changed since it was loaded (${why}). Press Refresh and re-check it.`;
+        setFulfillMsg({ text, ok: false });
+        setScanMsg({ text, tone: "critical" });
+        return false;
+      }
       if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
       fetchPacked();
       return true;
