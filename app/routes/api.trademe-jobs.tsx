@@ -31,7 +31,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // reference) aren't shown as pickable cards. The local app already
       // filters these; this is a backstop for older or unfiltered pushes.
       const items = job.items.filter(
-        (i) => !i.packed && !packedIds.has(i.purchaseId) && isPickableSku(i.sku),
+        // Pack Check's own packed records are the authority. The snapshot's
+        // `packed` flag only mirrors them (prepacking v1 sends packed lines
+        // too, as parcel metadata), so it never hides or shows a card.
+        (i) => !packedIds.has(i.purchaseId) && isPickableSku(i.sku),
       );
       if (!items.length) return null;
       // Oldest sale in the job stands in for the order date; fall back to the
@@ -72,6 +75,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           fulfilmentChannel: job.fulfilmentChannel,
           buyerUsername: job.buyerUsername,
           purchaseIds: items.map((i) => i.purchaseId),
+          // Prepacking v1: whether the parcel may be SENT (null = not reported).
+          paymentStatus: job.paymentStatus,
+          shippingStatus: job.shippingStatus,
+          dispatchClearance: job.dispatchClearance,
+          dispatchBlockers: job.dispatchBlockers ? JSON.parse(job.dispatchBlockers) : null,
+          alreadyPackedItems: job.items.filter((i) => packedIds.has(i.purchaseId)).length,
         },
         lineItems: items.map((i) => ({
           id: `${TRADEME_ID_PREFIX}${i.purchaseId}`,

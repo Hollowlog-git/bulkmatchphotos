@@ -298,3 +298,55 @@ An optional job field, `"shippingStatus": "paid" | "manually_approved" |
 "unpaid"`. When it's `manually_approved`, Pack Check would show "Shipping
 approved manually" in place of the $0 warning, without inventing an amount.
 Agree it here before either app sends or reads it.
+
+## Prepacking (contract v1)
+
+Anything won can be **packed**, paid or not. Whether a package may be
+**sent** is shown separately and never changes because something was scanned.
+Pack Check never fulfils, buys labels or dispatches.
+
+**Version handshake.** `GET /api/trademe-sync` and the POST response return
+`"prepackingContractVersion": 1`. Send the same field in the POST body to use
+v1; any other value gets a 400. Older clients that omit it keep working:
+their jobs show with clearance not reported.
+
+**v1 job fields** (all existing fields unchanged):
+- `paymentStatus`: e.g. `paid`, `partially_paid`, `not_paid`, `unknown`.
+- `shippingStatus`: e.g. `correct`, `manually_approved`, `missing`,
+  `underpaid`, `overpaid`, `refunded`.
+- `dispatchClearance`: `"cleared"` or `"blocked"`. Absent means unknown,
+  which is never treated as cleared.
+- `dispatchBlockers`: blocker codes, e.g. `payment_not_confirmed`,
+  `shipping_not_cleared`, `hold_or_unknown`, `cancelled_or_unknown`,
+  `dispatched_or_unknown`.
+
+These are stored and refreshed on every full snapshot. Any `kanbanCol` is
+accepted. Items may be sent with `packed: true` as parcel metadata, but
+`packed` is only a mirror. Pack Check's own packed records alone decide what's
+packed, so stale metadata can't hide an item that was undone in Pack Check.
+
+**Send status** shown in Pack Check, on the package being packed, in the order
+list and in the Packed view:
+- **Cleared after packing**: every source in the package is cleared. For
+  Trade Me, `dispatchClearance` is `cleared` with no blockers. For Shopify,
+  the order is paid (`PAID` or `PARTIALLY_REFUNDED`).
+- **Prepack — payment outstanding**: Trade Me payment isn't confirmed, or
+  the Shopify order is pending, authorised or partly paid.
+- **Shipping not cleared**.
+- **Do not send — blocked**: a hold, cancellation, refund, dispatch, or an
+  unknown blocker code.
+- **Send status unknown**: not reported, or the parcel is no longer in the
+  latest sync.
+
+The worst source wins. A paid Shopify order never clears unpaid Trade Me
+items in the same package, or vice versa. When the local app reports a Trade
+Me shipping status, it overrides the dollar amount in Pack Check's shipping
+box: `manually_approved` with $0 shows as approved, and `missing` shows as not
+cleared even if an amount was paid.
+
+**New wins after prepacking.** Only the new items appear to scan; the banner
+says how many are already packed. The Packed view shows "N new items still to
+pack — don't send yet" until they're packed.
+
+**Unpaid Shopify orders** (pending payment) now appear in To pack, marked
+"💳 prepack", so they can be prepacked too.

@@ -10,6 +10,19 @@ import { Thumb } from "../components/Thumb";
 import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
 import { PackedList, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
+import { CLEARANCE_LABEL, combineClearance, shopifyOrderClearance, tradeMeJobClearance } from "../lib/clearance";
+
+// Whether a package may be SENT once packed. Every source must be cleared.
+function sendClearance(orders: Order[]) {
+  return combineClearance(orders.map(o => o.tradeMe ? tradeMeJobClearance(o.tradeMe) : shopifyOrderClearance(o.financialStatus)));
+}
+const CLEARANCE_STYLE: Record<string, { bg: string; text: string; icon: string }> = {
+  cleared: { bg: "#008060", text: "#fff", icon: "✅" },
+  payment_outstanding: { bg: "#b45309", text: "#fff", icon: "💳" },
+  shipping_not_cleared: { bg: "#a16207", text: "#fff", icon: "📮" },
+  blocked: { bg: "#d72c0d", text: "#fff", icon: "⛔" },
+  unknown: { bg: "#6b7280", text: "#fff", icon: "❔" },
+};
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -32,7 +45,13 @@ interface Order {
   fulfillmentOrders: FulfillmentOrder[]; lineItems: LineItem[];
   // Only set on Trade Me jobs synced from the local app (/api/trademe-jobs).
   deliveryAddressText?: string | null;
-  tradeMe?: { groupKey: string; fulfilmentChannel: string; buyerUsername: string | null; purchaseIds: string[] };
+  tradeMe?: {
+    groupKey: string; fulfilmentChannel: string; buyerUsername: string | null; purchaseIds: string[];
+    // Prepacking v1: may this parcel be SENT? (null = not reported)
+    paymentStatus?: string | null; shippingStatus?: string | null;
+    dispatchClearance?: string | null; dispatchBlockers?: string[] | null;
+    alreadyPackedItems?: number;
+  };
   // Which package this order is packed in. Shopify orders group by customer
   // name as before; a Trade Me job joins a Shopify group only on a verified
   // email + address match (lib/tradeMeMerge), otherwise it gets its own key.
@@ -548,7 +567,15 @@ export default function PackCheck() {
     { label: "Shopify orders", value: selectedOrders.filter(o => !o.tradeMe).reduce((s, o) => s + o.totalValue, 0), shipping: selectedOrders.filter(o => !o.tradeMe).reduce((s, o) => s + o.shippingAmount, 0) },
     { label: "Trade Me package", value: selectedOrders.filter(o => o.tradeMe).reduce((s, o) => s + o.totalValue, 0), shipping: selectedOrders.filter(o => o.tradeMe).reduce((s, o) => s + o.shippingAmount, 0) },
   ] : [];
-  const noShippingPaid = selectedOrders.length > 0 && totalShipping === 0;
+  // Trade Me shipping status from the local app (prepacking v1) overrides the
+  // dollar amount: $0 can be a manual approval, and a positive amount isn't
+  // proof the whole parcel's shipping is covered.
+  const SHIP_CLEARED = ["correct", "manually_approved", "refunded"];
+  const tmShipStatuses = selectedOrders.map(o => o.tradeMe?.shippingStatus).filter((x): x is string => !!x);
+  const tmShipBad = tmShipStatuses.find(st => !SHIP_CLEARED.includes(st)) ?? null;
+  const tmShipManual = !tmShipBad && tmShipStatuses.includes("manually_approved");
+  const shippingOk = tmShipBad ? false : totalShipping > 0 || tmShipManual;
+  const noShippingPaid = selectedOrders.length > 0 && !shippingOk;
   const allDiscountCodes = selectedOrders.flatMap(o => o.discountCodes.map(code => ({ code, orderName: o.name })));
   const hasAnyIssue = noShippingPaid || allDiscountCodes.length > 0;
   const shippingAddress = selectedOrders.find(o => o.shippingAddress)?.shippingAddress ?? null;
@@ -618,6 +645,12 @@ export default function PackCheck() {
   const customerEmail = selectedOrders[0]?.customerEmail ?? null;
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
   const hasSignature = selectedOrders.some(o => !o.tradeMe && isSignatureShipping(o));
+  // Shown whenever a package isn't cleared to send; a cleared package only
+  // gets the (green) banner when Trade Me items are involved, so ordinary
+  // paid website orders stay uncluttered.
+  const clearanceAll = selectedOrders.length ? sendClearance(selectedOrders) : null;
+  const currentClearance = clearanceAll && (clearanceAll.state !== "cleared" || selectedOrders.some(o => o.tradeMe)) ? clearanceAll : null;
+  const prepackedAlready = selectedOrders.reduce((n, o) => n + (o.tradeMe?.alreadyPackedItems ?? 0), 0);
   const tradeMeAddress = !shippingAddress ? selectedOrders.find(o => o.deliveryAddressText)?.deliveryAddressText ?? null : null;
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
@@ -782,6 +815,8 @@ export default function PackCheck() {
     for (const [packKey, customerOrders] of sorted) {
       const customer = packLabel(customerOrders);
       const linked = customerOrders.some(o => o.tradeMe) && customerOrders.some(o => !o.tradeMe);
+      const sendState = sendClearance(customerOrders).state;
+      const sendMark = sendState === "cleared" ? "" : sendState === "payment_outstanding" ? " 💳 prepack" : sendState === "blocked" ? " ⛔" : sendState === "shipping_not_cleared" ? " 📮" : " ❔";
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
       const orderCount = customerOrders.length;
       const orderLabel = orderCount > 1 ? `${orderCount} orders` : customerOrders[0].name;
@@ -791,7 +826,7 @@ export default function PackCheck() {
       const ageDays = Math.floor((Date.now() - Math.min(...customerOrders.map(o => new Date(o.createdAt).getTime()))) / 86400000);
       const ageLabel = ageDays >= 2 ? ` 🕐${ageDays}d` : "";
       options.push({
-        label: `${customer} — ${orderLabel}${linked ? " + Trade Me" : ""} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}`,
+        label: `${customer} — ${orderLabel}${linked ? " + Trade Me" : ""} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}${sendMark}`,
         value: packKey,
         // Everything the search box matches against.
         search: customerOrders
@@ -902,6 +937,26 @@ export default function PackCheck() {
           </Layout.Section>
         )}
 
+        {/* ── SEND STATUS (prepacking): packing is always allowed; this says
+             whether the parcel may be sent once packed. ── */}
+        {currentClearance && (
+          <Layout.Section>
+            <div style={{ background: CLEARANCE_STYLE[currentClearance.state].bg, color: CLEARANCE_STYLE[currentClearance.state].text, borderRadius: 10, padding: "12px 20px", display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 24 }}>{CLEARANCE_STYLE[currentClearance.state].icon}</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 17 }}>
+                  {CLEARANCE_LABEL[currentClearance.state]}{currentClearance.state !== "cleared" ? " — pack it, but don't send yet" : ""}
+                </div>
+                {(currentClearance.reasons.length > 0 || prepackedAlready > 0) && (
+                  <div style={{ fontSize: 13, opacity: 0.9 }}>
+                    {[...currentClearance.reasons, prepackedAlready ? `${prepackedAlready} item${prepackedAlready !== 1 ? "s" : ""} in this parcel already packed — only new items shown` : ""].filter(Boolean).join(" · ")}
+                  </div>
+                )}
+              </div>
+            </div>
+          </Layout.Section>
+        )}
+
         {/* ── SIGNATURE REQUIRED ── */}
         {hasSignature && (
           <Layout.Section>
@@ -927,7 +982,9 @@ export default function PackCheck() {
               </div>
               {noShippingPaid && (
                 <div style={{ background: "#d72c0d", color: "#fff", borderRadius: 8, padding: "12px 16px", marginBottom: 8, fontWeight: 700, fontSize: 15 }}>
-                  ❌ NO SHIPPING PAID — Total shipping is $0.00
+                  {tmShipBad
+                    ? `❌ SHIPPING NOT CLEARED — Trade Me shipping is ${tmShipBad.replace(/_/g, " ")}`
+                    : "❌ NO SHIPPING PAID — Total shipping is $0.00"}
                 </div>
               )}
               {allDiscountCodes.length > 0 && (
@@ -1110,10 +1167,12 @@ export default function PackCheck() {
                         )}
                       </div>
 
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: totalShipping === 0 ? "#fff0f0" : "#f0fff4", border: `2px solid ${totalShipping === 0 ? "#d72c0d" : "#008060"}` }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", borderRadius: 8, background: !shippingOk ? "#fff0f0" : "#f0fff4", border: `2px solid ${!shippingOk ? "#d72c0d" : "#008060"}` }}>
                         <div>
-                          <div style={{ fontWeight: 700, fontSize: 14, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
-                            {totalShipping === 0 ? "❌ No shipping paid" : "✓ Shipping paid"}
+                          <div style={{ fontWeight: 700, fontSize: 14, color: !shippingOk ? "#d72c0d" : "#008060" }}>
+                            {tmShipBad ? `❌ Shipping not cleared (Trade Me: ${tmShipBad.replace(/_/g, " ")})`
+                              : tmShipManual && totalShipping === 0 ? "✓ Shipping approved manually"
+                              : totalShipping === 0 ? "❌ No shipping paid" : "✓ Shipping paid"}
                           </div>
                           <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>
                             {isMixedPackage
@@ -1121,7 +1180,7 @@ export default function PackCheck() {
                               : selectedOrders.map(o => o.shippingTitle).filter((v, i, a) => a.indexOf(v) === i).join(", ")}
                           </div>
                         </div>
-                        <div style={{ fontWeight: 700, fontSize: 20, color: totalShipping === 0 ? "#d72c0d" : "#008060" }}>
+                        <div style={{ fontWeight: 700, fontSize: 20, color: !shippingOk ? "#d72c0d" : "#008060" }}>
                           {fmt(totalShipping, currencyCode)}
                         </div>
                       </div>

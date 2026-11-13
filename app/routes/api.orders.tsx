@@ -150,7 +150,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const orders = edgesAll.slice(0, MAX_ORDERS)
       .filter((edge: any) => !packedIds.has(edge.node.id))
       .filter((edge: any) => !edge.node.cancelledAt)
-      .filter((edge: any) => edge.node.displayFinancialStatus !== "PENDING")
+      // Unpaid (pending) orders are included so they can be prepacked;
+      // Pack Check marks them "payment outstanding — do not send".
       .map((edge: any) => {
         const o = edge.node;
         const shippingOriginal = parseFloat(o.shippingLine?.originalPriceSet?.shopMoney?.amount ?? "0");

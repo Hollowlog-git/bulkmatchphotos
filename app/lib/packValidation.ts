@@ -32,9 +32,10 @@ export function checkTradeMePurchases(
   for (const p of submitted) {
     const item = byPurchase.get(p.purchaseId);
     // "Already packed" is checked first: once the local app processes a
-    // packed tick, its next sync omits the purchase, and that must not read
-    // as a problem with the sale.
-    if (alreadyPacked.has(p.purchaseId) || item?.packed) {
+    // packed tick, its next sync omits the purchase (or, under prepacking v1,
+    // keeps it as metadata), and that must not read as a problem. Only Pack
+    // Check's own records count; the snapshot's `packed` mirror is ignored.
+    if (alreadyPacked.has(p.purchaseId)) {
       conflicts.push({ ref: p.purchaseId, code: "already_packed", reason: "already recorded as packed" });
     } else if (!item) {
       // Central only knows it's absent, not why. The local app owns the
@@ -51,7 +52,7 @@ export function checkTradeMePurchases(
   const submittedIds = new Set(submitted.map((p) => p.purchaseId));
   const groupKeys = new Set(submitted.map((p) => p.groupKey));
   for (const i of snapshotItems) {
-    if (groupKeys.has(i.groupKey) && !submittedIds.has(i.purchaseId) && !i.packed && !alreadyPacked.has(i.purchaseId) && isPickableSku(i.sku)) {
+    if (groupKeys.has(i.groupKey) && !submittedIds.has(i.purchaseId) && !alreadyPacked.has(i.purchaseId) && isPickableSku(i.sku)) {
       conflicts.push({ ref: i.purchaseId, code: "new_item", reason: `new item added to parcel ${i.groupKey} since this page loaded` });
     }
   }
