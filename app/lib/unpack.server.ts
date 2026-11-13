@@ -35,6 +35,7 @@ export async function writeUnpackedEvents(
         shop, kind: e.kind, action: "unpacked", packageId: refs.packageId ?? e.packageId,
         purchaseId: e.purchaseId, groupKey: e.groupKey, quantity: e.quantity,
         orderId: e.orderId, orderName: e.orderName, salesRecordId: e.salesRecordId, lineItems: e.lineItems,
+        orderLineCount: e.orderLineCount, buyerEmail: e.buyerEmail,
       },
     });
     written++;

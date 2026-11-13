@@ -22,6 +22,7 @@ export const LIVE_ORDERS_QUERY = `#graphql
       ... on Order {
         id
         name
+        email
         cancelledAt
         displayFulfillmentStatus
         tags
@@ -42,6 +43,7 @@ export const LIVE_ORDERS_QUERY = `#graphql
 export interface LiveOrder {
   id: string;
   name: string;
+  email: string | null;
   cancelledAt: string | null;
   displayFulfillmentStatus: string;
   tags: string[];
@@ -127,6 +129,11 @@ export async function reportPendingShopifyOrders(
           data: {
             shop, kind: "shopify_order", action: "packed", packageId: pkg?.id ?? null,
             orderId: p.orderId, orderName: p.orderName, salesRecordId: refs.salesRecordId,
+            // For validating whole-cart ("C…") matches locally: the order's
+            // total line count (null if Shopify had more lines than fetched)
+            // and the buyer's email.
+            orderLineCount: l.lineItemsComplete ? l.lineItems.length : null,
+            buyerEmail: l.email ? l.email.trim().toLowerCase() : null,
             occurredAt: p.packedAt, // when it was actually packed
             lineItems: JSON.stringify(
               l.lineItems.filter((li) => li.currentQuantity > 0)

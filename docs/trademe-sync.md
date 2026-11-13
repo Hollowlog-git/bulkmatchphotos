@@ -89,6 +89,8 @@ and the local app reads them with a cursor.
       "occurredAt": "2026-11-13T05:00:00.000Z",
       "orderId": "gid://shopify/Order/123", "orderName": "SO4392",
       "tradeMeSalesRecordId": "P252876776",
+      "orderLineCount": 1,
+      "buyerEmail": "buyer@example.com",
       "lineItems": [ { "lineItemId": "gid://shopify/LineItem/9", "sku": "SVI080", "quantity": 1,
                        "tradeMePurchaseId": "252876776" } ] }
   ],
@@ -134,15 +136,28 @@ and the local app reads them with a cursor.
   Trade Me sales channel (see below), so website orders never appear.
 - `tradeMeSalesRecordId` is the raw "Trade Me sales record ID" attribute
   that Omnivore puts on the order, or `null` if it's absent or blank. It's
-  passed through unchanged.
+  passed through unchanged:
+  - `P<digits>`: a single Trade Me purchase (purchase ID = digits);
+  - `C<digits>`: a Trade Me cart with several purchases (Trade Me OrderId =
+    digits), e.g. SO4447 → `C6668449`.
+- `orderLineCount`: every line on the Shopify order, including lines
+  refunded or removed to zero; `null` if Shopify had more lines than Pack
+  Check fetched. `lineItems` lists only lines still to send, so a smaller
+  `lineItems` means something was removed.
+- `buyerEmail`: the Shopify order's email, trimmed and lower-cased, or `null`.
+  It's for verifying the buyer when matching a cart.
+- `orderLineCount` and `buyerEmail` were added on 13 Nov 2026. Older events,
+  including SO4447's, don't have them, and they're never rewritten.
 - `tradeMePurchaseId` is filled only for an **unambiguous single-purchase
   order**: the order has exactly one line in total (lines refunded or removed
   to zero still count, so an order that started with several lines stays
   ambiguous) and the sales record ID is `P` + digits. It's then the digits,
   e.g. `P252876776` → `252876776`. That format was confirmed against 4,547
   local purchases. In every other case it's `null`. Multi-line orders such as
-  SO4477 are always `null` for now, because Omnivore stores one sales record
-  ID per order, not per line.
+  SO4447 are always `null`, because Omnivore stores one reference per order,
+  not per line. The local app resolves those through the `C…` cart ID: it
+  checks the buyer, the purchase count and the quantities against its own
+  purchases for that Trade Me OrderId.
 - A Shopify order event whose `tradeMePurchaseId` is `null` must leave local
   packed statuses unchanged.
 
