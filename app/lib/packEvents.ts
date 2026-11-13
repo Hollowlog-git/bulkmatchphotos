@@ -78,6 +78,8 @@ export interface PackEventRow {
   orderId: string | null;
   orderName: string | null;
   salesRecordId?: string | null;
+  orderLineCount?: number | null;
+  buyerEmail?: string | null;
   lineItems: string | null;
   occurredAt: Date;
 }
@@ -93,6 +95,8 @@ export function serialiseEvent(e: PackEventRow) {
     orderId: e.orderId,
     orderName: e.orderName,
     tradeMeSalesRecordId: e.salesRecordId ?? null,
+    orderLineCount: e.orderLineCount ?? null,
+    buyerEmail: e.buyerEmail ?? null,
     lineItems: e.lineItems ? JSON.parse(e.lineItems) : [],
   };
 }
