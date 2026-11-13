@@ -151,7 +151,9 @@ Otherwise nothing is recorded, and the packer is told to Refresh. Each
 refusal carries a `code`:
 - `already_packed`: Pack Check has already recorded it as packed. This is
   checked first, so an item that was packed and then dropped from the next
-  sync isn't reported as a problem.
+  sync isn't reported as a problem. If that's the only reason, Pack Check
+  refreshes itself (keeping scans) and says so, so the packer doesn't have
+  to.
 - `not_in_latest_sync`: missing from the latest sync. Central doesn't know
   why (it may have been packed in the local app, or no longer be ready), so
   it doesn't guess.
@@ -169,7 +171,21 @@ of these hold:
 
 Order names are never used. While the setting is unset,
 `tradeMeChannelConfigured` is `false` and no Shopify orders are reported.
-Orders packed while it was unset are never reported later.
+
+**Packed Shopify orders are never missed.** Every packed Shopify order starts
+as *pending*. At the start of each read, before events are returned, Pack
+Check looks up the pending orders in Shopify and reports each Trade Me one as
+a `shopify_order` event, using the rules above. Website and other orders get
+no event. This includes orders packed before the channel was configured: they
+appear, with their original pack time in `occurredAt`, on the first read after
+it's set. Each pack is reported once. Events are never rewritten; a new fact
+is always a new `eventId`.
+
+The response includes `shopifyOrdersPendingReport`: how many packed Shopify
+orders are still waiting. It's non-zero while the channel is unset, or if
+Shopify couldn't be reached during this read; in that case
+`shopifyReportError` explains, and a later read reports them. Up to 250
+pending orders are processed per read.
 
 **Order diagnostic.** In the Shopify app, open **Order diagnostic** and
 look up one order. It's read-only and admin-only. It shows the order's

@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import db from "../db.server";
 import { sanitiseTradeMeImageUrl } from "../lib/tradeMeImage";
 import { decodeCursor, encodeCursor, serialiseEvent, tradeMeChannelAppIds } from "../lib/packEvents";
+import { reportPendingShopifyOrders } from "../lib/shopifyOrderEvents.server";
+import { unauthenticated } from "../shopify.server";
 
 interface IncomingItem {
   purchaseId: string;
@@ -241,13 +243,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return Response.json({ error: `limit must be an integer from 1 to ${MAX_LIMIT}` }, { status: 400 });
   }
 
+  // Report packed Shopify orders that haven't been reported yet (including
+  // ones packed before the Trade Me channel was configured), so they're in
+  // this read. If Shopify can't be reached they stay pending, nothing is
+  // lost, and the response says how many are still waiting.
+  let shopifyReport: any;
+  try {
+    const { admin } = await unauthenticated.admin(shop);
+    shopifyReport = await reportPendingShopifyOrders(shop, admin.graphql);
+  } catch (e: any) {
+    console.error("[trademe-sync] reporting packed Shopify orders failed:", e?.message);
+    shopifyReport = {
+      error: "Couldn't check packed Shopify orders with Shopify; they'll be reported on a later sync",
+      stillPending: await db.packedOrder.count({ where: { shop, reportState: null } }),
+    };
+  }
+
   const channelIds = tradeMeChannelAppIds();
   const packedWhere = { shop, ...(since ? { packedAt: { gt: since } } : {}) };
   const [page, packed, packedOrders] = await Promise.all([
     db.packEvent.findMany({ where: { shop, id: { gt: after } }, orderBy: { id: "asc" }, take: limit + 1 }),
     db.tradeMePackedItem.findMany({ where: packedWhere, orderBy: { packedAt: "asc" } }),
     channelIds.length
-      ? db.packedOrder.findMany({ where: { ...packedWhere, channelAppId: { in: channelIds }, hasTradeMeTag: true }, orderBy: { packedAt: "asc" } })
+      ? db.packedOrder.findMany({ where: { ...packedWhere, reportState: "reported" }, orderBy: { packedAt: "asc" } })
       : Promise.resolve([]),
   ]);
   const hasMore = page.length > limit;
@@ -258,6 +276,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     cursor: encodeCursor(events.length ? events[events.length - 1].id : after),
     hasMore,
     tradeMeChannelConfigured: channelIds.length > 0,
+    // stillPending > 0: some packed Shopify orders aren't reported yet (the
+    // channel is unset, or Shopify couldn't be checked). Read again later.
+    shopifyOrdersPendingReport: shopifyReport.stillPending ?? 0,
+    ...(shopifyReport.error ? { shopifyReportError: shopifyReport.error } : {}),
     packed: packed.map((p) => ({ purchaseId: p.purchaseId, groupKey: p.groupKey, packedAt: p.packedAt.toISOString() })),
     packedShopifyOrders: packedOrders.map((o) => ({ orderId: o.orderId, orderName: o.orderName, packedAt: o.packedAt.toISOString() })),
   });

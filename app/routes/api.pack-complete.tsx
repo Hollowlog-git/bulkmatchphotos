@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node"
 import { authenticate } from "../shopify.server";
 import crypto from "node:crypto";
 import db from "../db.server";
-import { hasTradeMeTag, isTradeMeChannel, tradeMeReferences } from "../lib/packEvents";
+import { channelFields, fetchLiveOrders, reportPendingShopifyOrders, type LiveOrder } from "../lib/shopifyOrderEvents.server";
 import {
   checkShopifyOrders, checkTradeMePurchases,
   type Conflict, type SubmittedOrder, type SubmittedPurchase,
@@ -102,29 +102,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
-const LIVE_ORDERS_QUERY = `#graphql
-  query PackCompleteOrders($ids: [ID!]!) {
-    nodes(ids: $ids) {
-      ... on Order {
-        id
-        name
-        cancelledAt
-        displayFulfillmentStatus
-        tags
-        customAttributes { key value }
-        app { id name }
-        channelInformation {
-          app { id title }
-          channelDefinition { handle channelName }
-        }
-        lineItems(first: 100) {
-          pageInfo { hasNextPage }
-          nodes { id sku quantity currentQuantity }
-        }
-      }
-    }
-  }`;
-
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
@@ -187,22 +164,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       db.tradeMePackedItem.findMany({ where: { shop }, select: { purchaseId: true } }),
       db.packedOrder.findMany({ where: { shop, orderId: { in: shopifyOrders.map((o) => o.id) } }, select: { orderId: true } }),
     ]);
-    const live = new Map<string, any>();
-    if (shopifyOrders.length) {
-      const res = await admin.graphql(LIVE_ORDERS_QUERY, { variables: { ids: shopifyOrders.map((o) => o.id) } });
-      const data: any = await res.json();
-      if (data?.errors) throw new Error("Shopify order check failed");
-      for (const n of data?.data?.nodes ?? []) {
-        if (n?.id) live.set(n.id, { ...n, lineItems: n.lineItems?.nodes ?? [], lineItemsComplete: !n.lineItems?.pageInfo?.hasNextPage });
-      }
-    }
+    const live: Map<string, LiveOrder> = shopifyOrders.length
+      ? await fetchLiveOrders(admin.graphql, shopifyOrders.map((o) => o.id))
+      : new Map();
     const conflicts: Conflict[] = [
       ...checkTradeMePurchases(
         tradeMePurchases,
         snapshotRows.map((r) => ({ purchaseId: r.purchaseId, quantity: r.quantity, packed: r.packed, sku: r.sku, groupKey: r.job.groupKey })),
         new Set(packedItems.map((p) => p.purchaseId)),
       ),
-      ...checkShopifyOrders(shopifyOrders, live, new Set(packedOrders.map((p) => p.orderId))),
+      ...checkShopifyOrders(shopifyOrders, live as Map<string, any>, new Set(packedOrders.map((p) => p.orderId))),
     ];
     if (conflicts.length) {
       console.log(`[pack-complete] refused shop=${shop} conflicts=${JSON.stringify(conflicts)}`);
@@ -211,21 +182,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // ── Record ─────────────────────────────────────────────────────────
     const packageId = cuidLike();
-    const channelOf = (o: any) => ({
-      channelAppId: o?.app?.id ?? o?.channelInformation?.app?.id ?? null,
-      channelHandle: o?.channelInformation?.channelDefinition?.handle ?? null,
-      channelName: o?.channelInformation?.channelDefinition?.channelName ?? null,
-      hasTradeMeTag: hasTradeMeTag(o?.tags),
-    });
-    const shopifyEvents = shopifyOrders
-      .map((o) => ({ o, l: live.get(o.id) }))
-      .filter(({ l }) => isTradeMeChannel([l?.app?.id, l?.channelInformation?.app?.id], l?.tags))
-      .map(({ o, l }) => ({
-        o,
-        l,
-        refs: tradeMeReferences({ customAttributes: l.customAttributes, lineItemCount: l.lineItems.length, lineItemsComplete: l.lineItemsComplete }),
-      }));
-
     await db.$transaction([
       db.packedPackage.create({
         data: {
@@ -237,8 +193,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           snapshot: JSON.stringify(cleanSnapshot(body?.snapshot)),
         },
       }),
+      // Shopify orders start pending (reportState null); they're reported to
+      // the local app just below, or on a later sync if that fails.
       ...shopifyOrders.map((o) =>
-        db.packedOrder.create({ data: { shop, orderId: o.id, orderName: o.name, ...channelOf(live.get(o.id)) } }),
+        db.packedOrder.create({ data: { shop, orderId: o.id, orderName: o.name, ...channelFields(live.get(o.id)) } }),
       ),
       ...tradeMePurchases.map((p) =>
         db.tradeMePackedItem.create({ data: { shop, purchaseId: p.purchaseId, groupKey: p.groupKey } }),
@@ -248,23 +206,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: { shop, kind: "trademe_purchase", action: "packed", packageId, purchaseId: p.purchaseId, groupKey: p.groupKey, quantity: p.quantity },
         }),
       ),
-      ...shopifyEvents.map(({ o, l, refs }) =>
-        db.packEvent.create({
-          data: {
-            shop, kind: "shopify_order", action: "packed", packageId, orderId: o.id, orderName: o.name,
-            salesRecordId: refs.salesRecordId,
-            // The purchase ID is only set for an unambiguous single-purchase
-            // order (lib/packEvents.ts tradeMeReferences); otherwise null.
-            lineItems: JSON.stringify(
-              (l.lineItems as any[]).filter((li) => li.currentQuantity > 0)
-                .map((li) => ({ lineItemId: li.id, sku: li.sku ?? null, quantity: li.currentQuantity, tradeMePurchaseId: refs.purchaseId })),
-            ),
-          },
-        }),
-      ),
     ]);
+    let report: any = null;
+    if (shopifyOrders.length) {
+      try {
+        report = await reportPendingShopifyOrders(shop, admin.graphql, { only: shopifyOrders.map((o) => o.id), live });
+      } catch (e: any) {
+        // Not fatal: the orders stay pending and the next sync read reports them.
+        console.error("[pack-complete] reporting Shopify orders deferred:", e?.message);
+      }
+    }
     console.log(
-      `[pack-complete] shop=${shop} orders=${shopifyOrders.map((o) => o.name).join(",")} purchases=${purchaseIds.join(",")} shopifyEvents=${shopifyEvents.length}`,
+      `[pack-complete] shop=${shop} orders=${shopifyOrders.map((o) => o.name).join(",")} purchases=${purchaseIds.join(",")} shopifyReport=${JSON.stringify(report)}`,
     );
     return Response.json({ success: true, packageId });
   } catch (error: any) {
