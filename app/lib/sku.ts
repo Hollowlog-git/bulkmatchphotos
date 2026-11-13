@@ -11,8 +11,11 @@ export function normaliseSku(raw: string): string {
   return m[1] + "-" + m[2].padStart(3, "0");
 }
 
+// Sort key: letter prefix + zero-padded number, so numbers sort by value
+// (CLEAR-432 before CLEAR-1001, AB-9 before AB-10). Any letter prefix
+// works; two-letter SKUs give exactly the same keys as before.
 export function skuSortKey(sku: string): string {
-  const m = sku.match(/^([A-Z]{2})-(\d+)$/);
+  const m = sku.toUpperCase().match(/^([A-Z]+)-(\d+)$/);
   if (!m) return sku;
   return m[1] + m[2].padStart(6, "0");
 }
