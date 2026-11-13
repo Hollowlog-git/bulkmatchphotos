@@ -199,7 +199,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
 // GET: the local app reads back what Pack Check has marked packed, so it can
 // mark those purchases packed/dispatched on its side. Optional ?since=<ISO>
-// returns only items packed after that time. Records older than 30 days are
+// returns only items packed after that time. Also returns Shopify orders
+// packed in Pack Check (packedShopifyOrders), which are kept indefinitely.
+// Trade Me packed items older than 30 days are
 // pruned here, by which point the local app has long since processed them.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!authorised(request)) {
@@ -220,12 +222,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shop, packedAt: { lt: new Date(Date.now() - 30 * 86400000) } },
   });
 
-  const packed = await db.tradeMePackedItem.findMany({
-    where: { shop, ...(since ? { packedAt: { gt: since } } : {}) },
-    orderBy: { packedAt: "asc" },
-  });
+  const packedWhere = { shop, ...(since ? { packedAt: { gt: since } } : {}) };
+  const [packed, packedOrders] = await Promise.all([
+    db.tradeMePackedItem.findMany({ where: packedWhere, orderBy: { packedAt: "asc" } }),
+    db.packedOrder.findMany({ where: packedWhere, orderBy: { packedAt: "asc" } }),
+  ]);
 
   return Response.json({
     packed: packed.map((p) => ({ purchaseId: p.purchaseId, groupKey: p.groupKey, packedAt: p.packedAt.toISOString() })),
+    // Shopify orders packed in Pack Check (they are not fulfilled in Shopify).
+    packedShopifyOrders: packedOrders.map((o) => ({ orderId: o.orderId, orderName: o.orderName, packedAt: o.packedAt.toISOString() })),
   });
 };

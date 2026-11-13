@@ -9,6 +9,7 @@ import { assignPackKeys } from "../lib/tradeMeMerge";
 import { Thumb } from "../components/Thumb";
 import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
+import { PackedList, type PackedPackageView } from "../components/PackedList";
 
 interface LineItem {
   id: string; title: string; quantity: number; sku: string;
@@ -102,8 +103,17 @@ export default function PackCheck() {
   const [scanMsg, setScanMsg] = useState<{ text: string; tone: "success" | "critical" | "warning" | "" }>({ text: "", tone: "" });
   const [filter, setFilter] = useState<"all" | "remaining" | "done">("all");
   const [history, setHistory] = useState<string[]>([]);
-  const [fulfilling, setFulfilling] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [fulfillMsg, setFulfillMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const movingRef = useRef(false);
+  // "To pack" (the packing screen) or "Packed" (packed but not yet sent).
+  const [view, setView] = useState<"topack" | "packed">("topack");
+  const viewRef = useRef<"topack" | "packed">("topack");
+  const [packed, setPacked] = useState<PackedPackageView[]>([]);
+  const [packedDays, setPackedDays] = useState(14);
+  const [packedLoading, setPackedLoading] = useState(false);
+  const [packedError, setPackedError] = useState<string | null>(null);
+  const [undoingId, setUndoingId] = useState<string | null>(null);
   const [muted, setMuted] = useState(() => {
     try { return localStorage.getItem("packcheck_muted") === "1"; } catch { return false; }
   });
@@ -264,25 +274,46 @@ export default function PackCheck() {
     else selectOrder("");
   }
 
-  function moveToNextOrder() {
-    const allOrders = ordersRef.current;
-    const currentCustomer = selectValueRef.current;
-    if (!allOrders.length) return;
-    const groups = groupPackages(allOrders);
-    const sorted = [...groups.entries()].sort((a, b) => {
-      const aDate = Math.max(...a[1].map(o => new Date(o.createdAt).getTime()));
-      const bDate = Math.max(...b[1].map(o => new Date(o.createdAt).getTime()));
-      return bDate - aDate;
-    });
-    const customers = sorted.map(([c]) => c);
-    const nextIdx = customers.indexOf(currentCustomer) + 1;
-    if (nextIdx < customers.length) {
+  // Next Order / Space. If every item in the current package is scanned
+  // (and nothing over-scanned), it's recorded as packed first and removed
+  // from the list; if recording fails, we stay put so nothing is lost.
+  async function moveToNextOrder() {
+    if (movingRef.current) return;
+    movingRef.current = true;
+    try {
+      const allOrders = ordersRef.current;
+      const currentKey = selectValueRef.current;
+      if (!allOrders.length) return;
+      const groups = groupPackages(allOrders);
+      const sorted = [...groups.entries()].sort(newestFirst);
+      const keys = sorted.map(([k]) => k);
+      const next = sorted[keys.indexOf(currentKey) + 1];
+
+      const items = packItemsRef.current;
+      const complete = !!currentKey && items.length > 0 && items.every(i => i.scanned === i.quantity);
+      let remaining = allOrders;
+      let packedLabel = "";
+      if (complete) {
+        const pkg = groups.get(currentKey) ?? [];
+        if (!(await recordPacked(pkg))) return;
+        const ids = new Set(pkg.map(o => o.id));
+        remaining = allOrders.filter(o => !ids.has(o.id));
+        ordersRef.current = remaining;
+        setOrders(remaining);
+        packedLabel = `✓ Packed ${packLabel(pkg)} · `;
+      }
+
       clearSession();
       setFulfillMsg(null);
-      selectOrderByCustomer(customers[nextIdx], allOrders);
-      setScanMsg({ text: `→ Moved to ${packLabel(sorted[nextIdx][1])}`, tone: "success" });
-    } else {
-      setScanMsg({ text: "No more orders!", tone: "warning" });
+      if (next) {
+        selectOrderByCustomer(next[0], remaining);
+        setScanMsg({ text: `${packedLabel}→ Moved to ${packLabel(next[1])}`, tone: "success" });
+      } else {
+        if (complete) selectOrder("");
+        setScanMsg({ text: `${packedLabel}No more orders!`, tone: complete ? "success" : "warning" });
+      }
+    } finally {
+      movingRef.current = false;
     }
   }
 
@@ -311,55 +342,95 @@ export default function PackCheck() {
   }
 
   // ── FULFILLMENT ───────────────────────────────────────────────────────────
-  async function fulfillOrders() {
-    // Trade Me jobs never go to Shopify — they're recorded as packed here and
-    // the local Trade Me app picks that up on its next read.
-    const orderIds = selectedOrders.filter(o => !o.tradeMe).map(o => o.id);
-    const tmPurchases = selectedOrders.flatMap(o =>
+  async function fetchPacked() {
+    setPackedLoading(true);
+    try {
+      const res = await fetch("/api/pack-complete");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setPacked(data.packages ?? []);
+      setPackedDays(data.days ?? 14);
+      setPackedError(null);
+    } catch (e: any) {
+      setPackedError(`Couldn't load packed orders (${e.message}).`);
+    } finally {
+      setPackedLoading(false);
+    }
+  }
+  useEffect(() => { fetchPacked(); }, []);
+
+  function switchView(next: "topack" | "packed") {
+    viewRef.current = next;
+    setView(next);
+    if (next === "packed") fetchPacked();
+  }
+
+  async function undoPacked(pkg: PackedPackageView) {
+    if (!confirm(`Undo packed for ${pkg.customer || pkg.label}? It goes back to "To pack".`)) return;
+    setUndoingId(pkg.id);
+    try {
+      const res = await fetch("/api/pack-complete", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packageId: pkg.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setPacked(ps => ps.filter(p => p.id !== pkg.id));
+      fetchOrders(false);
+    } catch (e: any) {
+      setPackedError(`Couldn't undo (${e.message}).`);
+    } finally {
+      setUndoingId(null);
+    }
+  }
+
+  // Records a fully scanned package as packed. Nothing is fulfilled in
+  // Shopify: Shopify orders are recorded (and hidden from Pack Check), Trade
+  // Me purchases are recorded, and the local Trade Me app reads both back on
+  // its next "Sync central Pack Check".
+  async function recordPacked(pkgOrders: Order[]): Promise<boolean> {
+    const shopifyOrders = pkgOrders.filter(o => !o.tradeMe).map(o => ({ id: o.id, name: o.name }));
+    const tradeMePurchases = pkgOrders.flatMap(o =>
       o.tradeMe ? o.tradeMe.purchaseIds.map(purchaseId => ({ purchaseId, groupKey: o.tradeMe!.groupKey })) : []);
-    if (!orderIds.length && !tmPurchases.length) { setFulfillMsg({ text: "No orders selected.", ok: false }); return; }
-    setFulfilling(true);
+    if (!shopifyOrders.length && !tradeMePurchases.length) return true;
+    setRecording(true);
     setFulfillMsg(null);
     try {
-      const done: string[] = [];
-      if (tmPurchases.length) {
-        const tmRes = await fetch("/api/trademe-jobs", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ purchases: tmPurchases }),
-        });
-        const tmData = await tmRes.json();
-        if (tmData.error) { setFulfillMsg({ text: `❌ Trade Me: ${tmData.error}`, ok: false }); return; }
-        done.push("Trade Me items marked packed");
-      }
-      let data: any = {};
-      if (orderIds.length) {
-        const res = await fetch("/api/fulfill", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ orderIds }),
-        });
-        data = await res.json();
-        if (!data.error) done.push("Shopify orders fulfilled");
-      }
-      if (data.error) {
-        setFulfillMsg({ text: `❌ ${done.length ? done.join(", ") + ", but Shopify failed: " : ""}${data.error}`, ok: false });
-        if (done.length) setTimeout(() => fetchOrders(false), 2000);
-      } else {
-        setFulfillMsg({ text: `✅ ${done.join(" · ")}`, ok: true });
-        clearSession();
-        setTimeout(() => fetchOrders(false), 2000);
-      }
+      const res = await fetch("/api/pack-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shopifyOrders,
+          tradeMePurchases,
+          label: packLabel(pkgOrders),
+          // A copy of what was packed, for the Packed view.
+          snapshot: {
+            customer: packLabel(pkgOrders),
+            email: [...pkgOrders].sort(shopifyFirst)[0]?.customerEmail ?? null,
+            orders: pkgOrders.map(o => ({ id: o.id, name: o.name, channel: o.channel })),
+            items: packItemsRef.current.map(i => ({ sku: i.sku, title: i.title, quantity: i.quantity, imageUrl: i.imageUrl ?? null })),
+          },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
+      fetchPacked();
+      return true;
     } catch (e: any) {
-      setFulfillMsg({ text: `❌ ${e.message}`, ok: false });
+      const text = `❌ Couldn't record as packed (${e.message}). Still on this order — try again.`;
+      setFulfillMsg({ text, ok: false });
+      setScanMsg({ text, tone: "critical" });
+      return false;
     } finally {
-      setFulfilling(false);
+      setRecording(false);
     }
   }
 
   // ── KEY CAPTURE ───────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (viewRef.current === "packed") return; // no packing shortcuts on the Packed view
       const tag = (e.target as HTMLElement).tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON";
       const scanFocused = document.activeElement === scanRef.current;
@@ -488,7 +559,6 @@ export default function PackCheck() {
   const customerTotalOrders = selectedOrders[0]?.customerTotalOrders ?? null;
   const hasSignature = selectedOrders.some(o => !o.tradeMe && isSignatureShipping(o));
   const tradeMeAddress = !shippingAddress ? selectedOrders.find(o => o.deliveryAddressText)?.deliveryAddressText ?? null : null;
-  const onlyTradeMe = selectedOrders.length > 0 && selectedOrders.every(o => o.tradeMe);
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
   const scannedQty = packItems.reduce((s, i) => s + Math.min(i.scanned, i.quantity), 0);
@@ -511,7 +581,7 @@ export default function PackCheck() {
   });
   const nextItem = packItems.find(i => i.scanned < i.quantity);
   const nextColour = nextItem ? getPrefixColour(nextItem.sku) : PALETTE[0];
-  const totalUnfulfilledCount = orders.length;
+  const packageCount = groupPackages(orders).size;
 
   // Persist mute preference, and stop speaking immediately when muted
   useEffect(() => {
@@ -679,7 +749,7 @@ export default function PackCheck() {
       <Layout>
 
         {/* ── CUSTOMER NOTE ── */}
-        {activeCustomerNote && (
+        {view === "topack" && activeCustomerNote && (
           <Layout.Section>
             <div style={{ background: "#ff6a00", borderRadius: 10, padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -696,41 +766,19 @@ export default function PackCheck() {
           </Layout.Section>
         )}
 
+        {/* ── HEADER: title + view switch | filters + sound + refresh ── */}
         <Layout.Section>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-            <Text variant="headingLg" as="h1">Pack Check</Text>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+              <Text variant="headingLg" as="h1">Pack Check</Text>
+              <ButtonGroup variant="segmented">
+                <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
+                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${packed.length})`}</Button>
+              </ButtonGroup>
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <Text variant="bodySm" tone="subdued" as="span">J = mark packed · K = undo · Space = next order</Text>
               <Button onClick={toggleTradeMe} pressed={includeTradeMe}>{includeTradeMe ? "✓ Clearance week" : "Clearance week"}</Button>
               <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
-            </div>
-          </div>
-        </Layout.Section>
-
-        {/* ── TOP BAR ── */}
-        <Layout.Section>
-          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ flex: "1 1 300px", minWidth: 0 }}>
-              {loadingOrders ? <InlineStack align="start"><Spinner size="small" /></InlineStack> : (
-                <OrderPicker options={groupedOptions()} value={selectValue} onSelect={selectOrder} />
-              )}
-            </div>
-            {packItems.length > 0 && (
-              <div style={{ flex: "1 1 200px", minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ flex: 1 }}>
-                    <ProgressBar progress={progressPct} tone={hasOverScan ? "critical" : progressPct === 100 ? "success" : "highlight"} size="medium" />
-                  </div>
-                  <Text variant="bodyMd" as="span" fontWeight="bold">{scannedQty}/{totalQty}</Text>
-                </div>
-              </div>
-            )}
-            <InlineStack gap="200" blockAlign="center">
-              {totalUnfulfilledCount > 0 && (
-                <div style={{ background: "#d72c0d", color: "#fff", fontWeight: 700, fontSize: 12, padding: "3px 9px", borderRadius: 12 }}>
-                  {totalUnfulfilledCount} unfulfilled
-                </div>
-              )}
               <button
                 type="button"
                 onClick={() => setMuted(m => !m)}
@@ -741,8 +789,36 @@ export default function PackCheck() {
               >
                 {muted ? "🔇" : "🔊"}
               </button>
-              <Button onClick={() => fetchOrders(false)} loading={loadingOrders}>Refresh</Button>
-            </InlineStack>
+              <Button onClick={() => (view === "packed" ? fetchPacked() : fetchOrders(false))} loading={view === "packed" ? packedLoading : loadingOrders}>Refresh</Button>
+            </div>
+          </div>
+        </Layout.Section>
+
+        {view === "packed" && (
+          <Layout.Section>
+            <PackedList packages={packed} days={packedDays} loading={packedLoading} error={packedError} undoingId={undoingId} onUndo={undoPacked} />
+          </Layout.Section>
+        )}
+
+        {view === "topack" && (<>
+        {/* ── ORDER SEARCH + PROGRESS ── */}
+        <Layout.Section>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ flex: "2 1 320px", minWidth: 0 }}>
+              {loadingOrders ? <InlineStack align="start"><Spinner size="small" /></InlineStack> : (
+                <OrderPicker options={groupedOptions()} value={selectValue} onSelect={selectOrder} />
+              )}
+            </div>
+            {packItems.length > 0 && (
+              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ flex: 1 }}>
+                    <ProgressBar progress={progressPct} tone={hasOverScan ? "critical" : progressPct === 100 ? "success" : "highlight"} size="medium" />
+                  </div>
+                  <Text variant="bodyMd" as="span" fontWeight="bold">{scannedQty}/{totalQty}</Text>
+                </div>
+              </div>
+            )}
           </div>
         </Layout.Section>
 
@@ -817,14 +893,9 @@ export default function PackCheck() {
                   </div>
                 </div>
                 <InlineStack gap="200">
-                  <Button
-                    variant="primary" size="large"
-                    loading={fulfilling}
-                    onClick={fulfillOrders}
-                  >
-                    {onlyTradeMe ? "📦 Mark Trade Me job as packed" : "🚚 Mark as Fulfilled & Notify Customer"}
+                  <Button variant="primary" size="large" loading={recording} onClick={moveToNextOrder}>
+                    📦 Packed — Next Order →
                   </Button>
-                  <Button size="large" onClick={moveToNextOrder}>Next Order →</Button>
                 </InlineStack>
               </div>
               {fulfillMsg && (
@@ -1039,7 +1110,10 @@ export default function PackCheck() {
               {packItems.length > 0 && (
                 <Card>
                   <BlockStack gap="300">
-                    <Text variant="headingMd" as="h2">Scan / Enter SKU</Text>
+                    <InlineStack align="space-between" blockAlign="baseline" wrap>
+                      <Text variant="headingMd" as="h2">Scan / Enter SKU</Text>
+                      <Text variant="bodySm" tone="subdued" as="span">J = mark packed · K = undo · Space = next order</Text>
+                    </InlineStack>
                     <TextField label="" labelHidden value={scanValue} onChange={handleScanChange}
                       onKeyDown={e => e.key === "Enter" && confirmScan()}
                       placeholder="Scan barcode or type SKU…"
@@ -1157,6 +1231,7 @@ export default function PackCheck() {
             </Card>
           </Layout.Section>
         )}
+        </>)}
       </Layout>
     </Page>
   );

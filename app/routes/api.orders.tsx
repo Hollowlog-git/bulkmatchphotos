@@ -1,12 +1,13 @@
 import type { LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
+import db from "../db.server";
 
 const PAGE_SIZE = 50;
 const MAX_ORDERS = 150;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   try {
-    const { admin } = await authenticate.admin(request);
+    const { admin, session } = await authenticate.admin(request);
 
     // Shopify returns at most 50 orders per page here (each carries up to 50
     // line items), so page through, oldest first, up to MAX_ORDERS. If more
@@ -139,7 +140,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       after = pageInfo.endCursor;
     }
 
+    // Orders packed in Pack Check stay unfulfilled in Shopify (Pack Check
+    // never fulfils), so leave them out here or they'd reappear.
+    const packedIds = new Set(
+      (await db.packedOrder.findMany({ where: { shop: session.shop }, select: { orderId: true } })).map((p) => p.orderId),
+    );
+
     const orders = edgesAll.slice(0, MAX_ORDERS)
+      .filter((edge: any) => !packedIds.has(edge.node.id))
       .filter((edge: any) => !edge.node.cancelledAt)
       .filter((edge: any) => edge.node.displayFinancialStatus !== "PENDING")
       .map((edge: any) => {
