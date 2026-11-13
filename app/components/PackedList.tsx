@@ -15,6 +15,13 @@ export interface PackedPackageView {
   items: { sku: string; title: string; quantity: number; imageUrl: string | null }[];
 }
 
+export interface LegacyPackedParcel {
+  groupKey: string;
+  packedAt: string;
+  purchaseIds: string[];
+  buyer: string | null;
+}
+
 const GREY = { bg: "#e0e0e0", text: "#444" };
 
 function ago(iso: string) {
@@ -26,8 +33,10 @@ function ago(iso: string) {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-export function PackedList({ packages, days, loading, error, undoingId, onUndo }: {
+export function PackedList({ packages, legacy = [], days, loading, error, undoingId, onUndo, onUndoLegacy }: {
   packages: PackedPackageView[];
+  legacy?: LegacyPackedParcel[];
+  onUndoLegacy?: (parcel: LegacyPackedParcel) => void;
   days: number;
   loading: boolean;
   error: string | null;
@@ -37,7 +46,7 @@ export function PackedList({ packages, days, loading, error, undoingId, onUndo }
   if (error) {
     return <Card><Text as="p" tone="critical">⚠️ {error}</Text></Card>;
   }
-  if (!loading && packages.length === 0) {
+  if (!loading && packages.length === 0 && legacy.length === 0) {
     return (
       <Card>
         <Text as="p" tone="subdued">
@@ -92,6 +101,32 @@ export function PackedList({ packages, days, loading, error, undoingId, onUndo }
           </Card>
         );
       })}
+      {legacy.length > 0 && (
+        <BlockStack gap="200">
+          <Text as="h3" variant="headingSm">Trade Me items packed without a package record</Text>
+          <Text as="p" tone="subdued" variant="bodySm">
+            Packed with the earlier "Mark Trade Me job as packed" button, so only their purchase IDs were kept.
+          </Text>
+          {legacy.map((l) => (
+            <Card key={l.groupKey}>
+              <InlineStack align="space-between" blockAlign="center" wrap>
+                <BlockStack gap="100">
+                  <Text as="h3" variant="headingMd">{l.buyer ?? `Trade Me parcel ${l.groupKey}`}</Text>
+                  <Text as="span" tone="subdued" variant="bodySm">
+                    Packed {ago(l.packedAt)} · {l.purchaseIds.length} item{l.purchaseIds.length !== 1 ? "s" : ""} · parcel {l.groupKey}
+                  </Text>
+                  <Text as="span" tone="subdued" variant="bodySm">Purchases: {l.purchaseIds.join(", ")}</Text>
+                </BlockStack>
+                {onUndoLegacy && (
+                  <Button tone="critical" loading={undoingId === `legacy:${l.groupKey}`} onClick={() => onUndoLegacy(l)}>
+                    Undo packed
+                  </Button>
+                )}
+              </InlineStack>
+            </Card>
+          ))}
+        </BlockStack>
+      )}
     </BlockStack>
   );
 }

@@ -93,44 +93,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return Response.json({ orders });
 };
 
-// POST { purchases: [{ purchaseId, groupKey }] } — mark items packed.
-// DELETE { purchaseIds: [...] } — undo a mistaken pack.
+// Packing is recorded only through /api/pack-complete, which writes the
+// package record and the events the local app reads. The first Trade Me
+// version's POST/DELETE here bypassed both, so it's gone; an old open tab
+// that still calls it gets a 410 and records nothing.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop;
-
-  try {
-    const body: any = await request.json();
-
-    if (request.method === "DELETE") {
-      const ids: string[] = Array.isArray(body?.purchaseIds) ? body.purchaseIds.filter((x: any) => typeof x === "string") : [];
-      if (!ids.length) return Response.json({ error: "purchaseIds required" }, { status: 400 });
-      const res = await db.tradeMePackedItem.deleteMany({ where: { shop, purchaseId: { in: ids } } });
-      return Response.json({ success: true, removed: res.count });
-    }
-
-    if (request.method !== "POST") {
-      return Response.json({ error: "POST or DELETE only" }, { status: 405 });
-    }
-
-    const purchases: { purchaseId: string; groupKey: string }[] = Array.isArray(body?.purchases)
-      ? body.purchases.filter((p: any) => typeof p?.purchaseId === "string" && typeof p?.groupKey === "string")
-      : [];
-    if (!purchases.length) return Response.json({ error: "purchases required" }, { status: 400 });
-
-    await db.$transaction(
-      purchases.map((p) =>
-        db.tradeMePackedItem.upsert({
-          where: { shop_purchaseId: { shop, purchaseId: p.purchaseId } },
-          create: { shop, purchaseId: p.purchaseId, groupKey: p.groupKey },
-          update: {},
-        }),
-      ),
-    );
-    console.log(`[trademe-jobs] packed shop=${shop} purchases=${purchases.map((p) => p.purchaseId).join(",")}`);
-    return Response.json({ success: true, packed: purchases.length });
-  } catch (error: any) {
-    console.error("[trademe-jobs] action failed:", error);
-    return Response.json({ error: error.message ?? "Unknown error" }, { status: 500 });
-  }
+  await authenticate.admin(request);
+  return Response.json(
+    { error: "This packing endpoint was retired. Reload Pack Check and finish the package again." },
+    { status: 410 },
+  );
 };

@@ -116,7 +116,14 @@ and the local app reads them with a cursor.
 **Event types**
 - `type`: `"packed"`, or `"unpacked"` when someone undoes a mistaken pack
   from Pack Check's Packed view. An `unpacked` event repeats the fields of
-  the `packed` event it reverses and shares its `packageId`.
+  the `packed` event it reverses. Undo writes one `unpacked` for every
+  purchase or order in the package whose latest event is `packed`, whichever
+  package it was originally tagged with. That includes events back-filled
+  from before the stream existed, which have `packageId: null`. Pack Check is
+  the source of packing status; the local app mirrors it.
+- If an earlier undo missed some `unpacked` events (fixed 13 Nov 2026), the
+  next read writes them automatically. That covers any purchase whose latest
+  event is `packed` but which Pack Check no longer holds as packed.
 - `kind: "trademe_purchase"`: one Trade Me purchase, matched by
   `purchaseId`. `groupKey` is the parcel it was packed in. `quantity` is the
   quantity scanned; it's `null` on events back-filled from before quantities
