@@ -138,7 +138,11 @@ model PackedOrder {
   channelAppId  String?
   channelHandle String?
   channelName   String?
-  hasTradeMeTag Boolean? // the order's "trademe" tag at pack time
+  hasTradeMeTag Boolean? // the order's "trademe" tag when it was classified
+  // null = not yet reported to the local app (pending); "reported" (a
+  // shopify_order event was written); "not_trademe"; "missing". See
+  // lib/shopifyOrderEvents.server.ts.
+  reportState   String?
 
   @@unique([shop, orderId])
   @@index([shop, packedAt])

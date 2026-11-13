@@ -429,9 +429,16 @@ export default function PackCheck() {
           packed.length ? `already packed: ${packed.join(", ")}` : "",
           other.map((c: any) => `${c.ref}: ${c.reason}`).join("; "),
         ].filter(Boolean);
-        const text = other.length
-          ? `⚠️ Not recorded — this package changed since it was loaded (${parts.join("; ")}). Press Refresh and re-check it.`
-          : `ℹ️ Not recorded — already packed (${packed.join(", ")}). Press Refresh to update this screen.`;
+        if (!other.length) {
+          // Only "already packed": this screen is just out of date. Refresh it
+          // (keeping scans) so packed items drop out and anything still to
+          // pack in this package stays on screen.
+          const text = `ℹ️ Already packed (${packed.join(", ")}) — screen refreshed. Nothing else changed.`;
+          await fetchOrders(true);
+          setScanMsg({ text, tone: "warning" });
+          return false;
+        }
+        const text = `⚠️ Not recorded — this package changed since it was loaded (${parts.join("; ")}). Press Refresh and re-check it.`;
         setFulfillMsg({ text, ok: false });
         setScanMsg({ text, tone: "critical" });
         return false;
