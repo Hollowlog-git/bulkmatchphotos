@@ -137,3 +137,19 @@ model PackedOrder {
   @@unique([shop, orderId])
   @@index([shop, packedAt])
 }
+
+// A copy of each package as it was when recorded as packed in Pack Check,
+// for the "Packed" view and its undo. Trade Me items disappear from
+// TradeMeJob once the local app processes them, so the contents are stored
+// here as JSON (SQLite has no JSON column type).
+model PackedPackage {
+  id              String   @id @default(cuid())
+  shop            String
+  label           String
+  packedAt        DateTime @default(now())
+  shopifyOrderIds String // JSON array of Shopify order GIDs
+  purchaseIds     String // JSON array of Trade Me purchase IDs
+  snapshot        String // JSON: { customer, email, orders: [{ id, name, channel }], items: [{ sku, title, quantity, imageUrl }] }
+
+  @@index([shop, packedAt])
+}
