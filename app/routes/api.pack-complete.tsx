@@ -2,7 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node"
 import { authenticate } from "../shopify.server";
 import crypto from "node:crypto";
 import db from "../db.server";
-import { isTradeMeChannel } from "../lib/packEvents";
+import { hasTradeMeTag, isTradeMeChannel, tradeMeReferences } from "../lib/packEvents";
 import {
   checkShopifyOrders, checkTradeMePurchases,
   type Conflict, type SubmittedOrder, type SubmittedPurchase,
@@ -110,13 +110,16 @@ const LIVE_ORDERS_QUERY = `#graphql
         name
         cancelledAt
         displayFulfillmentStatus
+        tags
+        customAttributes { key value }
         app { id name }
         channelInformation {
           app { id title }
           channelDefinition { handle channelName }
         }
         lineItems(first: 100) {
-          nodes { id sku currentQuantity }
+          pageInfo { hasNextPage }
+          nodes { id sku quantity currentQuantity }
         }
       }
     }
@@ -141,7 +144,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       await db.$transaction([
         ...told.map((e) => db.packEvent.create({
           data: { shop, kind: e.kind, action: "unpacked", packageId: pkg.id, purchaseId: e.purchaseId, groupKey: e.groupKey,
-            quantity: e.quantity, orderId: e.orderId, orderName: e.orderName, lineItems: e.lineItems },
+            quantity: e.quantity, orderId: e.orderId, orderName: e.orderName, salesRecordId: e.salesRecordId, lineItems: e.lineItems },
         })),
         db.packedOrder.deleteMany({ where: { shop, orderId: { in: orderIds } } }),
         db.tradeMePackedItem.deleteMany({ where: { shop, purchaseId: { in: purchaseIds } } }),
@@ -190,7 +193,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const data: any = await res.json();
       if (data?.errors) throw new Error("Shopify order check failed");
       for (const n of data?.data?.nodes ?? []) {
-        if (n?.id) live.set(n.id, { ...n, lineItems: n.lineItems?.nodes ?? [] });
+        if (n?.id) live.set(n.id, { ...n, lineItems: n.lineItems?.nodes ?? [], lineItemsComplete: !n.lineItems?.pageInfo?.hasNextPage });
       }
     }
     const conflicts: Conflict[] = [
@@ -212,10 +215,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       channelAppId: o?.app?.id ?? o?.channelInformation?.app?.id ?? null,
       channelHandle: o?.channelInformation?.channelDefinition?.handle ?? null,
       channelName: o?.channelInformation?.channelDefinition?.channelName ?? null,
+      hasTradeMeTag: hasTradeMeTag(o?.tags),
     });
     const shopifyEvents = shopifyOrders
       .map((o) => ({ o, l: live.get(o.id) }))
-      .filter(({ l }) => isTradeMeChannel([l?.app?.id, l?.channelInformation?.app?.id]));
+      .filter(({ l }) => isTradeMeChannel([l?.app?.id, l?.channelInformation?.app?.id], l?.tags))
+      .map(({ o, l }) => ({
+        o,
+        l,
+        refs: tradeMeReferences({ customAttributes: l.customAttributes, lineItemCount: l.lineItems.length, lineItemsComplete: l.lineItemsComplete }),
+      }));
 
     await db.$transaction([
       db.packedPackage.create({
@@ -239,15 +248,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           data: { shop, kind: "trademe_purchase", action: "packed", packageId, purchaseId: p.purchaseId, groupKey: p.groupKey, quantity: p.quantity },
         }),
       ),
-      ...shopifyEvents.map(({ o, l }) =>
+      ...shopifyEvents.map(({ o, l, refs }) =>
         db.packEvent.create({
           data: {
             shop, kind: "shopify_order", action: "packed", packageId, orderId: o.id, orderName: o.name,
-            // tradeMePurchaseId stays null until the purchase-reference field
-            // is confirmed with the order diagnostic.
+            salesRecordId: refs.salesRecordId,
+            // The purchase ID is only set for an unambiguous single-purchase
+            // order (lib/packEvents.ts tradeMeReferences); otherwise null.
             lineItems: JSON.stringify(
               (l.lineItems as any[]).filter((li) => li.currentQuantity > 0)
-                .map((li) => ({ lineItemId: li.id, sku: li.sku ?? null, quantity: li.currentQuantity, tradeMePurchaseId: null })),
+                .map((li) => ({ lineItemId: li.id, sku: li.sku ?? null, quantity: li.currentQuantity, tradeMePurchaseId: refs.purchaseId })),
             ),
           },
         }),

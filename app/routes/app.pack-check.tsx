@@ -421,8 +421,17 @@ export default function PackCheck() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409 && Array.isArray(data.conflicts)) {
-        const why = data.conflicts.map((c: any) => `${c.ref}: ${c.reason}`).join("; ");
-        const text = `⚠️ Not recorded: this package changed since it was loaded (${why}). Press Refresh and re-check it.`;
+        // Items already packed are reported apart from real changes, so an
+        // older screen doesn't make a packed item look like a problem.
+        const packed = data.conflicts.filter((c: any) => c.code === "already_packed").map((c: any) => c.ref);
+        const other = data.conflicts.filter((c: any) => c.code !== "already_packed");
+        const parts = [
+          packed.length ? `already packed: ${packed.join(", ")}` : "",
+          other.map((c: any) => `${c.ref}: ${c.reason}`).join("; "),
+        ].filter(Boolean);
+        const text = other.length
+          ? `⚠️ Not recorded — this package changed since it was loaded (${parts.join("; ")}). Press Refresh and re-check it.`
+          : `ℹ️ Not recorded — already packed (${packed.join(", ")}). Press Refresh to update this screen.`;
         setFulfillMsg({ text, ok: false });
         setScanMsg({ text, tone: "critical" });
         return false;

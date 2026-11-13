@@ -138,6 +138,7 @@ model PackedOrder {
   channelAppId  String?
   channelHandle String?
   channelName   String?
+  hasTradeMeTag Boolean? // the order's "trademe" tag at pack time
 
   @@unique([shop, orderId])
   @@index([shop, packedAt])
@@ -176,6 +177,7 @@ model PackEvent {
   // kind = shopify_order
   orderId    String?
   orderName  String?
+  salesRecordId String? // raw "Trade Me sales record ID" order attribute, e.g. "P252876776"
   lineItems  String? // JSON: [{ lineItemId, sku, quantity, tradeMePurchaseId }]
   occurredAt DateTime @default(now())
 

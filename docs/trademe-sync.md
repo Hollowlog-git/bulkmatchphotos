@@ -88,8 +88,9 @@ and the local app reads them with a cursor.
     { "eventId": "42", "type": "packed", "kind": "shopify_order", "packageId": "pkg_…",
       "occurredAt": "2026-11-13T05:00:00.000Z",
       "orderId": "gid://shopify/Order/123", "orderName": "SO4392",
-      "lineItems": [ { "lineItemId": "gid://shopify/LineItem/9", "sku": "AM-123", "quantity": 1,
-                       "tradeMePurchaseId": null } ] }
+      "tradeMeSalesRecordId": "P252876776",
+      "lineItems": [ { "lineItemId": "gid://shopify/LineItem/9", "sku": "SVI080", "quantity": 1,
+                       "tradeMePurchaseId": "252876776" } ] }
   ],
   "cursor": "v1.42",
   "hasMore": false,
@@ -124,10 +125,19 @@ and the local app reads them with a cursor.
   lists every line that still had something to send, with that quantity.
   Shopify order events are only produced for orders from the confirmed
   Trade Me sales channel (see below), so website orders never appear.
-- `tradeMePurchaseId` is always `null` for now. It will hold the Trade Me
-  purchase ID for that Shopify line once we've confirmed where the Trade Me
-  channel stores it (see the order diagnostic below). Until then, a Shopify
-  order event must not mark any local purchase packed.
+- `tradeMeSalesRecordId` is the raw "Trade Me sales record ID" attribute
+  that Omnivore puts on the order, or `null` if it's absent or blank. It's
+  passed through unchanged.
+- `tradeMePurchaseId` is filled only for an **unambiguous single-purchase
+  order**: the order has exactly one line in total (lines refunded or removed
+  to zero still count, so an order that started with several lines stays
+  ambiguous) and the sales record ID is `P` + digits. It's then the digits,
+  e.g. `P252876776` → `252876776`. That format was confirmed against 4,547
+  local purchases. In every other case it's `null`. Multi-line orders such as
+  SO4477 are always `null` for now, because Omnivore stores one sales record
+  ID per order, not per line.
+- A Shopify order event whose `tradeMePurchaseId` is `null` must leave local
+  packed statuses unchanged.
 
 **Before a package is recorded**, Pack Check checks it against the latest
 data:
@@ -137,12 +147,27 @@ data:
 - every Shopify order must still be open, uncancelled and unfulfilled, with
   the same lines and quantities.
 
-Otherwise nothing is recorded, and the packer is told to Refresh.
+Otherwise nothing is recorded, and the packer is told to Refresh. Each
+refusal carries a `code`:
+- `already_packed`: Pack Check has already recorded it as packed. This is
+  checked first, so an item that was packed and then dropped from the next
+  sync isn't reported as a problem.
+- `not_in_latest_sync`: missing from the latest sync. Central doesn't know
+  why (it may have been packed in the local app, or no longer be ready), so
+  it doesn't guess.
+- `moved_parcel`, `quantity_changed`, `new_item`: the parcel changed.
+- `not_found`, `cancelled`, `fulfilled`, `order_changed`: the Shopify order
+  changed.
 
-**Trade Me sales channel.** Set `TRADEME_SHOPIFY_CHANNEL_APP_ID` on the
-Fly app to the GID of the Shopify app that creates Trade Me orders, e.g.
-`gid://shopify/App/123456`; separate several with commas. Confirm the value
-with the order diagnostic, never from order names. While it's unset,
+**Trade Me sales channel.** A Shopify order counts as Trade Me only when both
+of these hold:
+- it was created by an app listed in `TRADEME_SHOPIFY_CHANNEL_APP_ID` on the
+  Fly app (comma-separated GIDs). The order diagnostic confirmed Omnivore,
+  `gid://shopify/App/1203668`;
+- it has the `trademe` tag, because it isn't established that Omnivore
+  handles only Trade Me.
+
+Order names are never used. While the setting is unset,
 `tradeMeChannelConfigured` is `false` and no Shopify orders are reported.
 Orders packed while it was unset are never reported later.
 
