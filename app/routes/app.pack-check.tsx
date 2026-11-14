@@ -11,6 +11,25 @@ import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
 import { PackedList, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
 import { CLEARANCE_LABEL, combineClearance, shopifyOrderClearance, tradeMeJobClearance } from "../lib/clearance";
+import { buildWaitingBags, matchBags, type BagIdentity, type BagMatch, type WaitingBagFull } from "../lib/bagMatch";
+
+// Who a package is for, for matching it to bags already packed.
+function packageIdentity(orders: Order[]): BagIdentity {
+  const u = (xs: (string | null | undefined)[]) => [...new Set(xs.filter((x): x is string => !!x && !!x.trim()))];
+  return {
+    groupKeys: u(orders.map(o => o.tradeMe?.groupKey)),
+    usernames: u(orders.map(o => o.tradeMe?.buyerUsername)),
+    emails: u(orders.map(o => o.customerEmail)),
+    addresses: orders.flatMap(o => [
+      ...(o.deliveryAddressText ? [{ text: o.deliveryAddressText }] : []),
+      ...(o.shippingAddress ? [{ structured: { address1: o.shippingAddress.address1, zip: o.shippingAddress.zip } }] : []),
+    ]),
+  };
+}
+function bagAgo(iso: string) {
+  const h = Math.floor((Date.now() - new Date(iso).getTime()) / 3600000);
+  return h < 1 ? "under an hour ago" : h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`;
+}
 
 // Whether a package may be SENT once packed. Every source must be cleared.
 function sendClearance(orders: Order[]) {
@@ -130,6 +149,11 @@ export default function PackCheck() {
   const viewRef = useRef<"topack" | "packed">("topack");
   const [packed, setPacked] = useState<PackedPackageView[]>([]);
   const [legacyPacked, setLegacyPacked] = useState<LegacyPackedParcel[]>([]);
+  // The packer's answer to "add to this existing bag?" per package (suggest
+  // matches only; same-parcel matches are added automatically).
+  const [bagChoice, setBagChoice] = useState<Record<string, "add" | "separate">>({});
+  const bagChoiceRef = useRef<Record<string, "add" | "separate">>({});
+  const waitingBagsRef = useRef<WaitingBagFull[]>([]);
   const [packedDays, setPackedDays] = useState(14);
   const [packedLoading, setPackedLoading] = useState(false);
   const [packedError, setPackedError] = useState<string | null>(null);
@@ -380,6 +404,7 @@ export default function PackCheck() {
       if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
       setPacked(data.packages ?? []);
       setLegacyPacked(data.legacy ?? []);
+      waitingBagsRef.current = buildWaitingBags(data.packages ?? [], data.legacy ?? []);
       setPackedDays(data.days ?? 14);
       setPackedError(null);
     } catch (e: any) {
@@ -440,6 +465,12 @@ export default function PackCheck() {
   // Me purchases are recorded, and the local Trade Me app reads both back on
   // its next "Sync central Pack Check".
   async function recordPacked(pkgOrders: Order[]): Promise<boolean> {
+    // Bag: same Trade Me parcel → its existing bag automatically; same buyer
+    // elsewhere → only if the packer chose "Add to this bag".
+    const match = matchBags(packageIdentity(pkgOrders), waitingBagsRef.current);
+    const key = packKeyOf(pkgOrders[0]);
+    const addToBagId = match && (match.kind === "definite" || (match.kind === "suggest" && bagChoiceRef.current[key] === "add"))
+      && (match.bag as WaitingBagFull).fileable ? match.bag.bagId : null;
     // Exactly what was loaded and scanned, with quantities, so the server can
     // check nothing changed since (holds, refunds, new items, fulfilment...).
     const shopifyOrders = pkgOrders.filter(o => !o.tradeMe).map(o => ({
@@ -460,12 +491,14 @@ export default function PackCheck() {
           shopifyOrders,
           tradeMePurchases,
           label: packLabel(pkgOrders),
+          ...(addToBagId ? { addToBagId } : {}),
           // A copy of what was packed, for the Packed view.
           snapshot: {
             customer: packLabel(pkgOrders),
             email: [...pkgOrders].sort(shopifyFirst)[0]?.customerEmail ?? null,
             orders: pkgOrders.map(o => ({ id: o.id, name: o.name, channel: o.channel })),
             items: packItemsRef.current.map(i => ({ sku: i.sku, title: i.title, quantity: i.quantity, imageUrl: i.imageUrl ?? null })),
+            identity: packageIdentity(pkgOrders),
           },
         }),
       });
@@ -651,6 +684,14 @@ export default function PackCheck() {
   const clearanceAll = selectedOrders.length ? sendClearance(selectedOrders) : null;
   const currentClearance = clearanceAll && (clearanceAll.state !== "cleared" || selectedOrders.some(o => o.tradeMe)) ? clearanceAll : null;
   const prepackedAlready = selectedOrders.reduce((n, o) => n + (o.tradeMe?.alreadyPackedItems ?? 0), 0);
+  const waitingBags = buildWaitingBags(packed as any, legacyPacked as any);
+  const bagMatch: BagMatch | null = selectedOrders.length ? matchBags(packageIdentity(selectedOrders), waitingBags) : null;
+  function chooseBag(choice: "add" | "separate") {
+    const next = { ...bagChoiceRef.current, [selectValue]: choice };
+    bagChoiceRef.current = next;
+    setBagChoice(next);
+    setTimeout(() => scanRef.current?.focus(), 50);
+  }
   const tradeMeAddress = !shippingAddress ? selectedOrders.find(o => o.deliveryAddressText)?.deliveryAddressText ?? null : null;
 
   const totalQty = packItems.reduce((s, i) => s + i.quantity, 0);
@@ -816,6 +857,8 @@ export default function PackCheck() {
       const customer = packLabel(customerOrders);
       const linked = customerOrders.some(o => o.tradeMe) && customerOrders.some(o => !o.tradeMe);
       const sendState = sendClearance(customerOrders).state;
+      const bm = matchBags(packageIdentity(customerOrders), waitingBags);
+      const bagMark = !bm ? "" : bm.kind === "definite" ? " ➕ Add to existing bag" : bm.kind === "suggest" ? " ➕? existing bag" : " ❔ bag";
       const sendMark = sendState === "cleared" ? "" : sendState === "payment_outstanding" ? " 💳 prepack" : sendState === "blocked" ? " ⛔" : sendState === "shipping_not_cleared" ? " 📮" : " ❔";
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
       const orderCount = customerOrders.length;
@@ -826,7 +869,7 @@ export default function PackCheck() {
       const ageDays = Math.floor((Date.now() - Math.min(...customerOrders.map(o => new Date(o.createdAt).getTime()))) / 86400000);
       const ageLabel = ageDays >= 2 ? ` 🕐${ageDays}d` : "";
       options.push({
-        label: `${customer} — ${orderLabel}${linked ? " + Trade Me" : ""} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}${sendMark}`,
+        label: `${customer} — ${orderLabel}${linked ? " + Trade Me" : ""} · ${totalLines} item${totalLines !== 1 ? "s" : ""}${ageLabel}${hasIssue ? " ⚠️" : ""}${hasNoSku ? " 📋" : ""}${sendMark}${bagMark}`,
         value: packKey,
         // Everything the search box matches against.
         search: customerOrders
@@ -868,7 +911,7 @@ export default function PackCheck() {
               <Text variant="headingLg" as="h1">Pack Check</Text>
               <ButtonGroup variant="segmented">
                 <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
-                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${packed.length + legacyPacked.length})`}</Button>
+                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${new Set(packed.map((p: any) => p.bagId ?? p.id)).size + legacyPacked.length})`}</Button>
               </ButtonGroup>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -936,6 +979,67 @@ export default function PackCheck() {
             </div>
           </Layout.Section>
         )}
+
+        {/* ── EXISTING BAG: this buyer already has a packed bag waiting ── */}
+        {bagMatch && (() => {
+          const bag = bagMatch.kind === "ambiguous" ? null : bagMatch.bag;
+          const contents = bag ? bag.items.map(i => i.sku || i.title).slice(0, 12).join(", ") + (bag.items.length > 12 ? ` +${bag.items.length - 12} more` : "") : "";
+          const head = bag ? `${bag.code} · ${bag.label} · packed ${bagAgo(bag.packedAt)} · ${bag.items.reduce((n, i) => n + i.quantity, 0)} items` : "";
+          const style = (bg: string) => ({ background: bg, color: "#fff", borderRadius: 10, padding: "14px 20px" });
+          if (bagMatch.kind === "definite") return (
+            <Layout.Section>
+              <div style={style("#1d4ed8")}>
+                <div style={{ fontWeight: 800, fontSize: 19 }}>➕ Add to existing bag — {bag!.code}</div>
+                <div style={{ fontSize: 14, marginTop: 2 }}>Same Trade Me parcel. {head}</div>
+                <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>Already in the bag: {contents}</div>
+                <div style={{ fontSize: 13, marginTop: 4, fontWeight: 700 }}>Put these new cards in that bag. {(bag as WaitingBagFull).fileable ? "They'll be recorded as part of it." : "(Packed with the earlier button — recorded as the same parcel.)"}</div>
+              </div>
+            </Layout.Section>
+          );
+          if (bagMatch.kind === "suggest") {
+            const choice = bagChoice[selectValue];
+            return (
+              <Layout.Section>
+                <div style={style(choice === "add" ? "#1d4ed8" : choice === "separate" ? "#4b5563" : "#7c3aed")}>
+                  <div style={{ fontWeight: 800, fontSize: 19 }}>
+                    {choice === "add" ? `➕ Adding to existing bag — ${bag!.code}` : choice === "separate" ? "Packing as a separate bag" : `📦 This buyer already has a packed bag — ${bag!.code}`}
+                  </div>
+                  <div style={{ fontSize: 14, marginTop: 2 }}>Different parcel/order, same buyer, matching delivery address. {head}</div>
+                  <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>Already in the bag: {contents}</div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <Button variant={choice === "add" ? "primary" : "secondary"} onClick={() => chooseBag("add")}>Add to {bag!.code}</Button>
+                    <Button variant={choice === "separate" ? "primary" : "secondary"} onClick={() => chooseBag("separate")}>Keep separate</Button>
+                  </div>
+                  {!choice && <div style={{ fontSize: 12, marginTop: 6 }}>Not combined unless you choose "Add".</div>}
+                </div>
+              </Layout.Section>
+            );
+          }
+          if (bagMatch.kind === "unconfirmed_address") return (
+            <Layout.Section>
+              <div style={style("#92400e")}>
+                <div style={{ fontWeight: 800, fontSize: 17 }}>⚠️ Same buyer has a packed bag ({bag!.code}), but the delivery address doesn't match or can't be checked</div>
+                <div style={{ fontSize: 13, marginTop: 2 }}>{head}. Packing as a separate bag — check the address before combining by hand.</div>
+              </div>
+            </Layout.Section>
+          );
+          if (bagMatch.kind === "blocked") return (
+            <Layout.Section>
+              <div style={style("#b91c1c")}>
+                <div style={{ fontWeight: 800, fontSize: 17 }}>⛔ This buyer's existing bag {bag!.code} is on hold, blocked or possibly dispatched — don't add to it</div>
+                <div style={{ fontSize: 13, marginTop: 2 }}>{head}. Packing as a separate bag.</div>
+              </div>
+            </Layout.Section>
+          );
+          return (
+            <Layout.Section>
+              <div style={style("#92400e")}>
+                <div style={{ fontWeight: 800, fontSize: 17 }}>⚠️ This buyer has {bagMatch.bags.length} packed bags — can't tell which one to add to</div>
+                <div style={{ fontSize: 13, marginTop: 2 }}>{bagMatch.bags.map(b => `${b.code} (packed ${bagAgo(b.packedAt)})`).join(" · ")}. Packing as a separate bag — check the Packed view.</div>
+              </div>
+            </Layout.Section>
+          );
+        })()}
 
         {/* ── SEND STATUS (prepacking): packing is always allowed; this says
              whether the parcel may be sent once packed. ── */}

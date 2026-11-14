@@ -6,6 +6,7 @@ import { channelFields, fetchLiveOrders, reportPendingShopifyOrders, type LiveOr
 import { writeUnpackedEvents } from "../lib/unpack.server";
 import { combineClearance, shopifyOrderClearance, tradeMeJobClearance, type Clearance } from "../lib/clearance";
 import { isPickableSku } from "../lib/tradeMeItems";
+import { bagCode } from "../lib/bagMatch";
 
 async function purchaseIdsInPackages(shop: string): Promise<Set<string>> {
   const pkgs = await db.packedPackage.findMany({ where: { shop }, select: { purchaseIds: true } });
@@ -29,6 +30,7 @@ import {
 //          tradeMePurchases: [{ purchaseId, groupKey, quantity }] }
 //        -> 200 { packageId } | 409 { conflicts } if anything changed since
 //           the page loaded (nothing is recorded) | 400 malformed
+//          [addToBagId]  — file it in an existing bag (see lib/bagMatch.ts)
 // DELETE { packageId }  — undo: the package goes back to "To pack"
 
 const PACKED_VIEW_DAYS = 14;
@@ -52,8 +54,20 @@ function cleanSnapshot(raw: any) {
       quantity: Number.isFinite(i?.quantity) ? Math.max(0, Math.floor(i.quantity)) : 0,
       imageUrl: httpsOrNull(i?.imageUrl),
     })),
+    // Buyer identity, for spotting later additions to this bag.
+    identity: {
+      groupKeys: strList(raw?.identity?.groupKeys, 100),
+      usernames: strList(raw?.identity?.usernames, 100),
+      emails: strList(raw?.identity?.emails, 320),
+      addresses: (Array.isArray(raw?.identity?.addresses) ? raw.identity.addresses : []).slice(0, 20).map((a: any) => ({
+        text: str(a?.text, 500) || null,
+        structured: a?.structured ? { address1: str(a.structured.address1, 200), zip: str(a.structured.zip, 20) } : null,
+      })),
+    },
   };
 }
+const strList = (v: unknown, max: number) =>
+  (Array.isArray(v) ? v : []).filter((x) => typeof x === "string" && x.trim()).slice(0, 50).map((x: string) => x.slice(0, max));
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
@@ -68,6 +82,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const allIds = [...new Set(packages.flatMap((p) => JSON.parse(p.shopifyOrderIds) as string[]))];
   const fulfilled = new Set<string>();
   const shopifyClearance = new Map<string, Clearance>();
+  const shopifyIdentity = new Map<string, { email: string | null; address: { address1: string; zip: string } | null }>();
   for (let i = 0; i < allIds.length; i += 100) {
     const res = await admin.graphql(
       `#graphql
@@ -78,6 +93,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             displayFulfillmentStatus
             displayFinancialStatus
             cancelledAt
+            email
+            shippingAddress { address1 zip }
           }
         }
       }`,
@@ -87,6 +104,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     for (const n of data?.data?.nodes ?? []) {
       if (n?.id && n.displayFulfillmentStatus === "FULFILLED") fulfilled.add(n.id);
       if (n?.id) shopifyClearance.set(n.id, shopifyOrderClearance(n.displayFinancialStatus, !!n.cancelledAt));
+      if (n?.id) shopifyIdentity.set(n.id, { email: n.email ?? null, address: n.shippingAddress?.address1 ? { address1: n.shippingAddress.address1, zip: n.shippingAddress.zip ?? "" } : null });
     }
   }
 
@@ -142,11 +160,50 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { sources, remainingToPack };
   };
 
+  // ── Bags: packages filed together (bagId), with everything needed to
+  // spot additions for the same buyer. ──────────────────────────────────
+  const packedRows = await db.tradeMePackedItem.findMany({ where: { shop, purchaseId: { in: allPurchaseIds } }, select: { purchaseId: true, groupKey: true } });
+  const groupKeyOf = new Map(packedRows.map((r) => [r.purchaseId, r.groupKey]));
+  const identityOf = (purchaseIds: string[], orderIds: string[], snap: any) => {
+    const groupKeys = new Set<string>(snap?.identity?.groupKeys ?? []);
+    const usernames = new Set<string>(snap?.identity?.usernames ?? []);
+    const emails = new Set<string>([...(snap?.identity?.emails ?? []), ...(snap?.email ? [snap.email] : [])]);
+    const addresses: { text?: string | null; structured?: { address1: string; zip: string } | null }[] = [...(snap?.identity?.addresses ?? [])];
+    for (const id of purchaseIds) {
+      const gk = groupKeyOf.get(id); if (gk) groupKeys.add(gk);
+      const job = jobByPurchase.get(id);
+      if (job) {
+        groupKeys.add(job.groupKey);
+        if (job.buyerUsername) usernames.add(job.buyerUsername);
+        if (job.buyerEmail) emails.add(job.buyerEmail);
+        if (job.deliveryAddress && !addresses.some((a) => a.text === job.deliveryAddress)) addresses.push({ text: job.deliveryAddress });
+      }
+    }
+    for (const id of orderIds) {
+      const si = shopifyIdentity.get(id);
+      if (si?.email) emails.add(si.email);
+      if (si?.address && !addresses.some((a) => a.structured?.address1 === si.address!.address1)) addresses.push({ structured: si.address });
+    }
+    return { groupKeys: [...groupKeys], usernames: [...usernames], emails: [...emails], addresses };
+  };
+
+  // Same-buyer Trade Me items waiting to pack in a *different* parcel.
+  const openJobs = await db.tradeMeJob.findMany({ where: { shop }, include: { items: true } });
+  const possibleAdditions = (ident: { groupKeys: string[]; usernames: string[]; emails: string[] }) => {
+    const lc = (xs: string[]) => new Set(xs.map((x) => x.trim().toLowerCase()));
+    const u = lc(ident.usernames), e = lc(ident.emails), g = new Set(ident.groupKeys);
+    return openJobs
+      .filter((j) => !g.has(j.groupKey) && ((j.buyerUsername && u.has(j.buyerUsername.toLowerCase())) || (j.buyerEmail && e.has(j.buyerEmail.toLowerCase()))))
+      .reduce((n, j) => n + j.items.filter((i) => !packedNow.has(i.purchaseId) && isPickableSku(i.sku)).length, 0);
+  };
+
   return Response.json({
     days: PACKED_VIEW_DAYS,
     legacy: legacy.map((l) => {
       const tm = tradeMeStatus(l.purchaseIds);
-      return { ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack };
+      const identity = identityOf(l.purchaseIds, [], null);
+      identity.groupKeys = [...new Set([...identity.groupKeys, l.groupKey])];
+      return { ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack, identity, possibleAdditions: possibleAdditions(identity) };
     }),
     packages: packages
       .map((p) => {
@@ -155,6 +212,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         const snapshot = JSON.parse(p.snapshot);
         return {
           id: p.id,
+          bagId: p.bagId ?? p.id,
+          bagCode: bagCode(p.bagId ?? p.id),
+          identity: identityOf(purchaseIds, orderIds, snapshot),
           label: p.label,
           packedAt: p.packedAt.toISOString(),
           tradeMeItems: purchaseIds.length,
@@ -171,7 +231,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           })(),
         };
       })
-      .filter((p) => !p.sent),
+      .filter((p) => !p.sent)
+      .map((p: any) => ({ ...p, possibleAdditions: possibleAdditions(p.identity) })),
   });
 };
 
@@ -268,12 +329,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return Response.json({ error: "This package changed since it was loaded", conflicts }, { status: 409 });
     }
 
-    // ── Record ─────────────────────────────────────────────────────────
+    // ── Which bag? ─────────────────────────────────────────────────────
     const packageId = cuidLike();
+    let bagId = packageId;
+    if (body?.addToBagId !== undefined && body?.addToBagId !== null) {
+      const want = typeof body.addToBagId === "string" ? body.addToBagId : "";
+      const inBag = want ? await db.packedPackage.findFirst({ where: { shop, OR: [{ bagId: want }, { id: want, bagId: null }] } }) : null;
+      if (!inBag) {
+        return Response.json({ error: "That bag no longer exists (undone?). Refresh and choose again.", conflicts: [{ ref: want, code: "bag_gone", reason: "bag no longer exists" }] }, { status: 409 });
+      }
+      bagId = want;
+    }
+
+    // ── Record ─────────────────────────────────────────────────────────
     await db.$transaction([
       db.packedPackage.create({
         data: {
           id: packageId,
+          bagId,
           shop,
           label: str(body?.label, 200) || shopifyOrders.map((o) => o.name).join(", ") || "Trade Me package",
           shopifyOrderIds: JSON.stringify(shopifyOrders.map((o) => o.id)),
@@ -307,7 +380,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     console.log(
       `[pack-complete] shop=${shop} orders=${shopifyOrders.map((o) => o.name).join(",")} purchases=${purchaseIds.join(",")} shopifyReport=${JSON.stringify(report)}`,
     );
-    return Response.json({ success: true, packageId });
+    return Response.json({ success: true, packageId, bagId });
   } catch (error: any) {
     console.error("[pack-complete] failed:", error);
     return Response.json({ error: error.message ?? "Unknown error" }, { status: 500 });

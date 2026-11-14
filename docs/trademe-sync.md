@@ -350,3 +350,28 @@ pack — don't send yet" until they're packed.
 
 **Unpaid Shopify orders** (pending payment) now appear in To pack, marked
 "💳 prepack", so they can be prepacked too.
+
+## Adding to a bag that's already packed
+
+Each recorded package belongs to a **bag** (`PackedPackage.bagId`, shown as
+e.g. `BAG-3K2ABC`). While packing, Pack Check checks the package against the
+bags packed and waiting to be sent (last 14 days):
+- **Same Trade Me parcel (`groupKey`)**: "➕ Add to existing bag BAG-…",
+  with the bag's packed date and contents. It's filed into that bag
+  automatically.
+- **Different parcel or order, same buyer** (same email or Trade Me username;
+  never a name alone) **and a compatible delivery address**: "📦 This buyer
+  already has a packed bag". It's only filed into it if the packer clicks
+  **Add to BAG-…**; otherwise it's a separate bag.
+- **Same buyer but the address differs or can't be checked**: a warning, and
+  it's packed as a separate bag.
+- **The matching bag is on hold, blocked, cancelled, of unknown status (e.g.
+  dispatched), or there's more than one candidate**: a warning, never a
+  combine suggestion.
+
+The order list marks these packages "➕ Add to existing bag", "➕? existing
+bag" or "❔ bag". The Packed view shows each bag as one card: its code,
+when it was first packed and added to, every package's contents with its own
+Undo, and one verdict. That verdict is "🚫 Don't send yet" until nothing is
+left to pack, no same-buyer items are waiting in another parcel, and payment
+and shipping are cleared. Only then does it say "✅ OK to send".

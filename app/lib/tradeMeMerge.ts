@@ -44,7 +44,7 @@ const STREET_WORDS: Record<string, string> = {
 // ("Flat 2, 12 Kauri Rd" and "2/12 Kauri Road" both reduce to 2 12 kauri road).
 const IGNORED_WORDS = new Set(["flat", "unit", "apt", "apartment", "level", "lvl", "suite"]);
 
-function addressTokens(s: string): string[] {
+export function addressTokens(s: string): string[] {
   return s
     .toLowerCase()
     .replace(/(\d)([a-z])\b/g, "$1 $2") // "12a" -> "12 a", so "12A" and "12 A" agree
