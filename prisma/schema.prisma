@@ -165,7 +165,10 @@ model PackedPackage {
   packedAt        DateTime @default(now())
   shopifyOrderIds String // JSON array of Shopify order GIDs
   purchaseIds     String // JSON array of Trade Me purchase IDs
-  snapshot        String // JSON: { customer, email, orders: [{ id, name, channel }], items: [{ sku, title, quantity, imageUrl }] }
+  snapshot        String // JSON: { customer, email, orders: [{ id, name, channel }], items: [{ sku, title, quantity, imageUrl }], identity }
+  // The physical bag this package went into. Its own id unless it was added
+  // to an existing bag (same Trade Me parcel, or confirmed by the packer).
+  bagId           String?
 
   @@index([shop, packedAt])
 }
