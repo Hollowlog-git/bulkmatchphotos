@@ -89,6 +89,7 @@ interface BagView {
   orderNames: string[];
   items: { sku: string; title: string; quantity: number; imageUrl: string | null }[];
   ready: boolean;
+  isTradeMe: boolean; // has Trade Me items or Trade Me-channel orders
 }
 
 function uniqueShipTo(list: ShipTo[]): ShipTo[] {
@@ -120,6 +121,7 @@ export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedPar
       orderNames: pkgs.flatMap((p) => p.orders.map((o) => o.name)),
       items: pkgs.flatMap((p) => p.items),
       ready: bagVerdict(pkgs).ready,
+      isTradeMe: pkgs.some((p) => p.tradeMeItems > 0 || p.orders.some((o) => o.channel === "Trade Me")),
     };
   });
   for (const l of legacy) {
@@ -137,6 +139,7 @@ export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedPar
       orderNames: [],
       items: l.purchaseIds.map((id) => ({ sku: "", title: `Trade Me purchase ${id}`, quantity: 1, imageUrl: null })),
       ready: bagVerdict([l]).ready,
+      isTradeMe: true,
     });
   }
   return bags.sort((a, b) => b.packedAt.localeCompare(a.packedAt));
@@ -158,16 +161,31 @@ function matchesQuery(bag: BagView, query: string) {
   return query.toLowerCase().replace(/#/g, " ").split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 }
 
-function Address({ shipTo }: { shipTo: ShipTo[] }) {
-  if (!shipTo.length) return <Text as="span" tone="critical" variant="bodySm">No delivery address on record — check before sending</Text>;
+// The Trade Me username matters for Trade Me bags: use the address's own,
+// else the bag's known usernames; if there's none, say so plainly.
+function TradeMeName({ username }: { username: string | null }) {
+  return username
+    ? <div style={{ fontWeight: 700, color: "#00547a" }}>Trade Me: {username}</div>
+    : <div style={{ fontWeight: 600, color: "#b45309" }}>Trade Me username not known — check the local app</div>;
+}
+
+function Address({ shipTo, isTradeMe, usernames }: { shipTo: ShipTo[]; isTradeMe: boolean; usernames: string[] }) {
+  const fallback = usernames.length ? usernames.join(", ") : null;
+  if (!shipTo.length) {
+    return (
+      <BlockStack gap="100">
+        {isTradeMe && <TradeMeName username={fallback} />}
+        <Text as="span" tone="critical" variant="bodySm">No delivery address on record — check before sending</Text>
+      </BlockStack>
+    );
+  }
   return (
     <BlockStack gap="150">
       {shipTo.length > 1 && <Text as="span" tone="critical" variant="bodySm" fontWeight="semibold">⚠️ {shipTo.length} different addresses — check before sending</Text>}
       {shipTo.map((s, i) => (
         <div key={i} style={{ fontSize: 14, lineHeight: 1.45 }}>
-          <div style={{ fontWeight: 700 }}>
-            {s.name ?? ""}{s.username ? <span style={{ fontWeight: 600, color: "#00547a" }}>{s.name ? " · " : ""}Trade Me: {s.username}</span> : null}
-          </div>
+          {s.name && <div style={{ fontWeight: 700 }}>{s.name}</div>}
+          {(isTradeMe || s.username) && <TradeMeName username={s.username ?? fallback} />}
           {s.lines.map((line, j) => <div key={j}>{line}</div>)}
         </div>
       ))}
@@ -221,7 +239,7 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
                   <Text as="span" variant="bodySm" tone="subdued">Packed {ago(b.packedAt)} · {units} item{units !== 1 ? "s" : ""}</Text>
                   {b.orderNames.length > 0 && <Text as="span" variant="bodySm" tone="subdued">{b.orderNames.join(", ")}</Text>}
                 </BlockStack>
-                <Address shipTo={b.shipTo} />
+                <Address shipTo={b.shipTo} isTradeMe={b.isTradeMe} usernames={b.usernames} />
                 <div style={{ fontSize: 12, color: "#555", lineHeight: 1.5 }}>
                   {b.items.map((i) => `${i.sku || i.title}${i.quantity > 1 ? ` ×${i.quantity}` : ""}`).join(", ")}
                 </div>

@@ -200,6 +200,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { groupKeys: [...groupKeys], usernames: [...usernames], emails: [...emails], addresses };
   };
 
+  // Trade Me-channel Shopify orders (from the package copies) and the buyer
+  // directory, for usernames on Omnivore orders.
+  const tradeMeOrderIds = new Set(packages.flatMap((p) =>
+    ((JSON.parse(p.snapshot).orders ?? []) as any[]).filter((o) => o.channel === "Trade Me").map((o) => o.id)));
+  const buyerEmails = [...new Set([...shopifyIdentity.values()].map((v) => (v.email ?? "").trim().toLowerCase()).filter(Boolean))];
+  const buyersByEmail = new Map((await db.tradeMeBuyer.findMany({ where: { shop, email: { in: buyerEmails } } })).map((b) => [b.email, b]));
+
   // Where to send it: every distinct delivery address in the package, with
   // the buyer's name and Trade Me username (for the Ready to ship list).
   const shipToOf = (purchaseIds: string[], orderIds: string[]): ShipTo[] => {
@@ -222,7 +229,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         lines: (job.deliveryAddress ?? "").split(/\r?\n|,\s*/).map((x) => x.trim()).filter(Boolean),
       });
     }
-    for (const id of orderIds) add(shopifyIdentity.get(id)?.shipTo ?? null);
+    for (const id of orderIds) {
+      const t = shopifyIdentity.get(id)?.shipTo ?? null;
+      // Trade Me-channel (Omnivore) orders: fill in the Trade Me username
+      // from the buyer directory, by exact email.
+      if (t && !t.username && tradeMeOrderIds.has(id)) {
+        const email = (shopifyIdentity.get(id)?.email ?? "").trim().toLowerCase();
+        const buyer = email ? buyersByEmail.get(email) : undefined;
+        if (buyer) t.username = buyer.username;
+      }
+      add(t);
+    }
     return out;
   };
 
