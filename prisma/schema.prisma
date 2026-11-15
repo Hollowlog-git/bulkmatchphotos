@@ -198,3 +198,18 @@ model PackEvent {
 
   @@index([shop, id])
 }
+
+// Trade Me buyers seen in syncs from the local app (email → username), kept
+// after their parcels leave the snapshot. Used to show the Trade Me username
+// for Trade Me-channel Shopify orders (Omnivore), whose Shopify record only
+// has the buyer's name and email. Matched on exact email only.
+model TradeMeBuyer {
+  id        String   @id @default(cuid())
+  shop      String
+  email     String // trimmed, lower-cased
+  username  String
+  name      String?
+  updatedAt DateTime @updatedAt
+
+  @@unique([shop, email])
+}

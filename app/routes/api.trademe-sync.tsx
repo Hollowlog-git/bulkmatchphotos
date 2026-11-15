@@ -225,6 +225,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         }
       }
 
+      // Remember each buyer's email → Trade Me username (kept after their
+      // parcels leave the snapshot) for showing usernames on Omnivore orders.
+      for (const job of jobs) {
+        const email = (job.buyerEmail ?? "").trim().toLowerCase();
+        const username = (job.buyerUsername ?? "").trim();
+        if (!email || !username) continue;
+        await tx.tradeMeBuyer.upsert({
+          where: { shop_email: { shop, email } },
+          create: { shop, email, username, name: job.buyerName || null },
+          update: { username, name: job.buyerName || null },
+        });
+      }
+
       return { deletedJobs: deletedJobs.count, deletedItems: deletedItems.count };
     });
 
