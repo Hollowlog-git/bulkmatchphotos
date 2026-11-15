@@ -15,13 +15,14 @@ export function bagClearance(pkgs: PkgLike[]): Clearance {
   return { state, reasons: [...new Set(pkgs.flatMap((p) => p.clearance?.reasons ?? []))] };
 }
 
-export function bagVerdict(pkgs: PkgLike[]) {
+export function bagVerdict(pkgs: PkgLike[], waitingInToPack: string[] = []) {
   const clearance = bagClearance(pkgs);
   const remainingToPack = Math.max(0, ...pkgs.map((p) => p.remainingToPack ?? 0));
   const possibleAdditions = Math.max(0, ...pkgs.map((p) => p.possibleAdditions ?? 0));
   const holds = [
     remainingToPack ? `${remainingToPack} new item${remainingToPack !== 1 ? "s" : ""} still to pack` : "",
     possibleAdditions ? `${possibleAdditions} item${possibleAdditions !== 1 ? "s" : ""} from the same buyer waiting in another parcel — check whether they go in this bag` : "",
+    waitingInToPack.length ? `waiting in To pack to be added: ${waitingInToPack.slice(0, 6).join(", ")}${waitingInToPack.length > 6 ? ` +${waitingInToPack.length - 6} more` : ""}` : "",
     clearance.state !== "cleared" ? CLEARANCE_LABEL[clearance.state].toLowerCase() : "",
   ].filter(Boolean);
   return { ready: holds.length === 0, holds, clearance, remainingToPack, possibleAdditions };
