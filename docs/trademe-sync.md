@@ -392,3 +392,50 @@ The same rule (`lib/bagVerdict.ts`) decides the tab counts, which view a bag
 appears in, and its verdict line. On Packed and Ready to ship, a search bar
 filters by name, Trade Me username, email, bag code, order number, SKU, card
 title or address.
+
+## Local dispatch (contract v1)
+
+The local app is authoritative for actual dispatch and its undo. Pack Check
+records it as **sent (local dispatch)**, separately from scanning. It never
+fulfils in Shopify, notifies customers, buys labels, or writes packed/unpacked
+events because of a dispatch.
+
+**Handshake.** `GET /api/trademe-sync` (every page) and the POST response
+return `"dispatchContractVersion": 1`. Send `dispatchContractVersion: 1` with
+`dispatchEvents` in the POST. Events without the version, or any other version,
+get a 400.
+
+**Receiving.** The whole POST (snapshot plus events) is validated first, and
+any invalid event rejects the request with nothing changed. Then the snapshot
+and the receipts commit in one transaction, and
+`dispatchEventIdsAcknowledged` lists every event ID now durably stored,
+including repeats. That means **received**, not "already matched to a bag".
+- Each receipt is stored immutably by `eventId`. Repeats are no-ops. A reused
+  `eventId` with different content gets a 409 (`conflictingEventIds`) and
+  nothing changes.
+- Per `groupKey`, only a higher `revision` changes state. Older or equal
+  revisions are stored and acknowledged, but not applied (`applied = false`).
+- Up to 500 events per request. An empty snapshot (`allowEmpty: true`) can
+  carry events.
+
+**What "sent" means in Pack Check.** A purchase or order is sent when the
+newest applied revision of its parcel is `dispatched`. Shopify fulfilment
+also counts for an order. Matching is by exact purchase and order ID against
+package membership and packed history, never against the active snapshot.
+- A package is **sent** only when every constituent purchase and order is
+  sent. If only some are, it's **partly sent**: it stays in Packed with
+  "partly sent already (1 of 2) — check what's left" and is never shown as
+  ready.
+- Sent bags leave To pack, Packed, Ready to ship and the
+  add-to-existing-bag suggestions. They move to the **Sent** view: bag code,
+  packed and dispatch time, tracking, the "local dispatch" source, address
+  and Trade Me username, contents. It's searchable, tracking numbers
+  included.
+- Dispatched purchases are never offered for packing, even if still in the
+  snapshot. Completing a package that contains one gets a 409 with
+  `code: "dispatched"`.
+- `dispatch_undone` (newest revision) clears the sent state only. The bag
+  returns to Packed or Ready to ship, and scan history is untouched.
+- Dispatch reports that match no packed bag are kept, listed at the top of
+  the Sent view, and re-matched on every load. A missing parcel in a
+  snapshot never means sent or undone.

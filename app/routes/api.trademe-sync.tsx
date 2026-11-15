@@ -5,6 +5,8 @@ import { sanitiseTradeMeImageUrl } from "../lib/tradeMeImage";
 import { decodeCursor, encodeCursor, serialiseEvent, tradeMeChannelAppIds } from "../lib/packEvents";
 import { reportPendingShopifyOrders } from "../lib/shopifyOrderEvents.server";
 import { repairMissingUnpackedEvents } from "../lib/unpack.server";
+import { DISPATCH_CONTRACT_VERSION, validateDispatchEvents, type DispatchEvent } from "../lib/dispatch";
+import { findDispatchConflicts, storeDispatchEvents } from "../lib/dispatch.server";
 
 // Prepacking contract v1: unpaid wins may be packed; clearance to send is
 // reported per parcel. See docs/trademe-sync.md.
@@ -119,6 +121,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         if (!item || typeof item.purchaseId !== "string" || !item.purchaseId.trim()) {
           return Response.json({ error: `Job ${job.groupKey} has an item with no purchaseId` }, { status: 400 });
         }
+      }
+    }
+
+    // Dispatch contract v1: an incremental, durable stream of local
+    // dispatch/undo events, separate from the full jobs snapshot. Validated
+    // in full before anything changes.
+    let dispatchEvents: DispatchEvent[] = [];
+    if (body?.dispatchContractVersion !== undefined && body.dispatchContractVersion !== DISPATCH_CONTRACT_VERSION) {
+      return Response.json({ error: `Unsupported dispatchContractVersion; this server supports ${DISPATCH_CONTRACT_VERSION}` }, { status: 400 });
+    }
+    if (body?.dispatchEvents !== undefined) {
+      if (body.dispatchContractVersion !== DISPATCH_CONTRACT_VERSION) {
+        return Response.json({ error: "dispatchEvents require dispatchContractVersion: 1" }, { status: 400 });
+      }
+      const v = validateDispatchEvents(body.dispatchEvents);
+      if ("error" in v) return Response.json({ error: v.error }, { status: 400 });
+      dispatchEvents = v.events;
+      const conflicts = await findDispatchConflicts(shop, dispatchEvents);
+      if (conflicts.length) {
+        return Response.json(
+          { error: "These dispatch eventIds were already received with different content", conflictingEventIds: conflicts },
+          { status: 409 },
+        );
       }
     }
 
@@ -238,8 +263,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         });
       }
 
-      return { deletedJobs: deletedJobs.count, deletedItems: deletedItems.count };
-    });
+      // Dispatch receipts commit in the same transaction as the snapshot.
+      const dispatchAcked = await storeDispatchEvents(tx, shop, dispatchEvents);
+
+      return { deletedJobs: deletedJobs.count, deletedItems: deletedItems.count, dispatchAcked };
+    }, { timeout: 60000 });
 
     console.log(
       `[trademe-sync] POST shop=${shop} jobs_in=${jobs.length} items_in=${incomingPurchaseIds.length} ` +
@@ -249,9 +277,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return Response.json({
       success: true,
       prepackingContractVersion: PREPACKING_CONTRACT_VERSION,
+      dispatchContractVersion: DISPATCH_CONTRACT_VERSION,
+      // Durable receipt only: these are stored and will be (re)matched to
+      // packages; it doesn't mean every one already matched a bag.
+      dispatchEventIdsAcknowledged: result.dispatchAcked,
       jobsReceived: jobs.length,
       itemsReceived: incomingPurchaseIds.length,
-      ...result,
+      deletedJobs: result.deletedJobs,
+      deletedItems: result.deletedItems,
     });
   } catch (error: any) {
     console.error("[trademe-sync] Failed to process sync:", error);
@@ -338,6 +371,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Advertised only now that storage, packing, revalidation and the
     // send-status display all support it (see docs/trademe-sync.md).
     prepackingContractVersion: PREPACKING_CONTRACT_VERSION,
+    dispatchContractVersion: DISPATCH_CONTRACT_VERSION,
     events: events.map(serialiseEvent),
     cursor: encodeCursor(events.length ? events[events.length - 1].id : after),
     hasMore,

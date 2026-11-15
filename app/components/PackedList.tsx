@@ -27,7 +27,14 @@ export interface PackedPackageView {
   bagCode?: string;
   shipTo?: ShipTo[];
   identity?: { usernames?: string[]; emails?: string[] };
+  sentState?: { state: "sent" | "partial" | "unsent"; sent: number; total: number };
+  dispatch?: DispatchView | null;
 }
+
+// Sent status from the local app's dispatch (contract v1). Separate from
+// scanning: it never changes what was physically packed.
+export interface DispatchView { provenance: string; dispatchedAt: string | null; tracking: string[]; sources: string[] }
+export interface UnmatchedDispatch { groupKey: string; purchaseIds: string[]; shopifyOrderIds: string[]; dispatchedAt: string | null; tracking: string[] }
 
 export interface LegacyPackedParcel {
   groupKey: string;
@@ -38,6 +45,8 @@ export interface LegacyPackedParcel {
   remainingToPack?: number;
   possibleAdditions?: number;
   shipTo?: ShipTo[];
+  sentState?: { state: "sent" | "partial" | "unsent"; sent: number; total: number };
+  dispatch?: DispatchView | null;
 }
 
 const BADGE_TONE: Record<string, "success" | "critical" | "warning" | "attention" | undefined> = {
@@ -92,6 +101,7 @@ interface BagView {
   isTradeMe: boolean; // has Trade Me items or Trade Me-channel orders
   waiting: string[]; // items in To pack that belong in this bag
   siblings: string[]; // other bags for the same buyer (codes)
+  dispatch: DispatchView | null;
 }
 
 function uniqueShipTo(list: ShipTo[]): ShipTo[] {
@@ -102,6 +112,18 @@ function uniqueShipTo(list: ShipTo[]): ShipTo[] {
     if (e) { e.username ??= t.username; e.name ??= t.name; } else out.push({ ...t });
   }
   return out;
+}
+
+function mergeDispatch(ds: (DispatchView | null)[]): DispatchView | null {
+  const real = ds.filter((d): d is DispatchView => !!d);
+  if (!real.length) return null;
+  const dates = real.map((d) => d.dispatchedAt).filter((d): d is string => !!d).sort();
+  return {
+    provenance: real[0].provenance,
+    dispatchedAt: dates.length ? dates[dates.length - 1] : null,
+    tracking: [...new Set(real.flatMap((d) => d.tracking))],
+    sources: [...new Set(real.flatMap((d) => d.sources))],
+  };
 }
 
 export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedParcel[] = [], waitingByBag: Record<string, string[]> = {}): BagView[] {
@@ -126,6 +148,7 @@ export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedPar
       isTradeMe: pkgs.some((p) => p.tradeMeItems > 0 || p.orders.some((o) => o.channel === "Trade Me")),
       waiting: waitingByBag[key] ?? [],
       siblings: [],
+      dispatch: mergeDispatch(pkgs.map((p) => p.dispatch ?? null)),
     };
   });
   for (const l of legacy) {
@@ -146,6 +169,7 @@ export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedPar
       isTradeMe: true,
       waiting: waitingByBag[`legacy:${l.groupKey}`] ?? [],
       siblings: [],
+      dispatch: l.dispatch ?? null,
     });
   }
   // Same buyer (email or Trade Me username) with more than one bag: flag so
@@ -170,6 +194,7 @@ function matchesQuery(bag: BagView, query: string) {
     bag.code, bag.name, ...bag.usernames, ...bag.emails, ...bag.orderNames,
     ...bag.items.flatMap((i) => [i.sku, i.title]),
     ...bag.shipTo.flatMap((s) => [s.name ?? "", s.username ?? "", ...s.lines]),
+    ...(bag.dispatch?.tracking ?? []),
   ].join(" ").toLowerCase();
   return query.toLowerCase().replace(/#/g, " ").split(/\s+/).filter(Boolean).every((w) => hay.includes(w));
 }
@@ -206,7 +231,7 @@ function Address({ shipTo, isTradeMe, usernames }: { shipTo: ShipTo[]; isTradeMe
   );
 }
 
-export function PackedList({ packages, legacy = [], days, loading, error, undoingId, onUndo, onUndoLegacy, mode = "packed", query = "", waitingByBag = {} }: {
+export function PackedList({ packages, legacy = [], days, loading, error, undoingId, onUndo, onUndoLegacy, mode = "packed", query = "", waitingByBag = {}, unmatched = [] }: {
   packages: PackedPackageView[];
   legacy?: LegacyPackedParcel[];
   onUndoLegacy?: (parcel: LegacyPackedParcel) => void;
@@ -215,14 +240,62 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
   error: string | null;
   undoingId: string | null;
   onUndo: (pkg: PackedPackageView) => void;
-  mode?: "packed" | "ready";
+  mode?: "packed" | "ready" | "sent";
   query?: string;
   waitingByBag?: Record<string, string[]>;
+  unmatched?: UnmatchedDispatch[];
 }) {
   if (error) return <Card><Text as="p" tone="critical">⚠️ {error}</Text></Card>;
 
-  const all = buildBags(packages, legacy, waitingByBag).filter((b) => (mode === "ready" ? b.ready : !b.ready));
+  // In "sent" mode the caller passes only sent bags.
+  const all = buildBags(packages, legacy, waitingByBag).filter((b) => (mode === "sent" ? true : mode === "ready" ? b.ready : !b.ready));
   const bags = query.trim() ? all.filter((b) => matchesQuery(b, query)) : all;
+
+  if (mode === "sent") {
+    return (
+      <BlockStack gap="200">
+        {unmatched.length > 0 && (
+          <Card>
+            <BlockStack gap="150">
+              <Text as="h3" variant="headingSm" tone="caution">⚠️ {unmatched.length} dispatch report{unmatched.length !== 1 ? "s" : ""} from the local app don't match a packed bag yet</Text>
+              <Text as="p" variant="bodySm" tone="subdued">Kept and re-checked on every load. Usually items dispatched without being packed in Pack Check.</Text>
+              {unmatched.map((u) => (
+                <Text key={u.groupKey} as="p" variant="bodySm">
+                  Parcel {u.groupKey}{u.dispatchedAt ? ` · sent ${ago(u.dispatchedAt)}` : ""} · purchases {u.purchaseIds.join(", ") || "—"}{u.shopifyOrderIds.length ? ` · ${u.shopifyOrderIds.length} Shopify order(s)` : ""}{u.tracking.length ? ` · tracking ${u.tracking.join(", ")}` : ""}
+                </Text>
+              ))}
+            </BlockStack>
+          </Card>
+        )}
+        <Text as="p" tone="subdued" variant="bodySm">
+          Sent in the last {days} days: every item and order in the bag is dispatched (by the local app) or fulfilled in Shopify. Searchable history.
+        </Text>
+        {bags.length === 0 ? (
+          <Card><Text as="p" tone="subdued">{query.trim() ? `Nothing matches "${query}".` : "Nothing sent yet."}</Text></Card>
+        ) : (
+          <Card padding="0">
+            {bags.map((b, idx) => (
+              <div key={b.key} style={{ display: "grid", gridTemplateColumns: "minmax(150px, 1fr) minmax(200px, 1.6fr) minmax(200px, 1.6fr)", gap: 16, padding: "14px 18px", borderTop: idx ? "1px solid #e3e3e3" : "none", alignItems: "start" }}>
+                <BlockStack gap="100">
+                  <span style={{ fontFamily: "monospace", fontWeight: 800, fontSize: 14, background: "#f1f5f9", color: "#334155", padding: "2px 8px", borderRadius: 4, alignSelf: "flex-start" }}>{b.code}</span>
+                  <Text as="span" variant="bodySm" tone="subdued">Packed {ago(b.packedAt)}</Text>
+                  {b.dispatch
+                    ? <Text as="span" variant="bodySm">📮 Sent {b.dispatch.dispatchedAt ? ago(b.dispatch.dispatchedAt) : "(time not recorded)"} · {b.dispatch.provenance}</Text>
+                    : <Text as="span" variant="bodySm">📮 Fulfilled in Shopify</Text>}
+                  {b.dispatch?.tracking.length ? <Text as="span" variant="bodySm" fontWeight="semibold">Tracking: {b.dispatch.tracking.join(", ")}</Text> : null}
+                </BlockStack>
+                <Address shipTo={b.shipTo} isTradeMe={b.isTradeMe} usernames={b.usernames} />
+                <div style={{ fontSize: 12, color: "#555", lineHeight: 1.5 }}>
+                  {b.items.map((i) => `${i.sku || i.title}${i.quantity > 1 ? ` ×${i.quantity}` : ""}`).join(", ")}
+                  {b.orderNames.length > 0 && <div>{b.orderNames.join(", ")}</div>}
+                </div>
+              </div>
+            ))}
+          </Card>
+        )}
+      </BlockStack>
+    );
+  }
 
   if (!loading && bags.length === 0) {
     return (

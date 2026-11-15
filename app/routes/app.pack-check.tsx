@@ -9,7 +9,7 @@ import { assignPackKeys } from "../lib/tradeMeMerge";
 import { Thumb } from "../components/Thumb";
 import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
-import { PackedList, bagCounts, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
+import { PackedList, bagCounts, buildBags, type LegacyPackedParcel, type PackedPackageView, type UnmatchedDispatch } from "../components/PackedList";
 import { CLEARANCE_LABEL, combineClearance, shopifyOrderClearance, tradeMeJobClearance } from "../lib/clearance";
 import { buildWaitingBags, matchBags, pendingAdditionsByBag, type BagIdentity, type BagMatch, type WaitingBagFull } from "../lib/bagMatch";
 
@@ -147,8 +147,12 @@ export default function PackCheck() {
   // "To pack" (the packing screen) or "Packed" (packed but not yet sent).
   // "To pack" (packing screen), "Packed" (packed, don't send yet) or
   // "Ready to ship" (packed, paid, cleared).
-  const [view, setView] = useState<"topack" | "packed" | "ready">("topack");
-  const viewRef = useRef<"topack" | "packed" | "ready">("topack");
+  const [view, setView] = useState<"topack" | "packed" | "ready" | "sent">("topack");
+  const viewRef = useRef<"topack" | "packed" | "ready" | "sent">("topack");
+  // Sent history (local dispatch contract v1 or Shopify fulfilment).
+  const [sentPackages, setSentPackages] = useState<PackedPackageView[]>([]);
+  const [sentLegacy, setSentLegacy] = useState<LegacyPackedParcel[]>([]);
+  const [unmatchedDispatches, setUnmatchedDispatches] = useState<UnmatchedDispatch[]>([]);
   const [bagQuery, setBagQuery] = useState("");
   const [packed, setPacked] = useState<PackedPackageView[]>([]);
   const [legacyPacked, setLegacyPacked] = useState<LegacyPackedParcel[]>([]);
@@ -412,6 +416,9 @@ export default function PackCheck() {
       if (!res.ok || data.error) throw new Error(data.error ?? `HTTP ${res.status}`);
       setPacked(data.packages ?? []);
       setLegacyPacked(data.legacy ?? []);
+      setSentPackages(data.sentPackages ?? []);
+      setSentLegacy(data.sentLegacy ?? []);
+      setUnmatchedDispatches(data.unmatchedDispatches ?? []);
       waitingBagsRef.current = buildWaitingBags(data.packages ?? [], data.legacy ?? []);
       setPackedDays(data.days ?? 14);
       setPackedError(null);
@@ -423,7 +430,7 @@ export default function PackCheck() {
   }
   useEffect(() => { fetchPacked(); }, []);
 
-  function switchView(next: "topack" | "packed" | "ready") {
+  function switchView(next: "topack" | "packed" | "ready" | "sent") {
     viewRef.current = next;
     setView(next);
     if (next !== "topack") fetchPacked();
@@ -933,6 +940,7 @@ export default function PackCheck() {
                 <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
                 <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${bagCounts(packed, legacyPacked, waitingByBag).packed})`}</Button>
                 <Button pressed={view === "ready"} onClick={() => switchView("ready")}>{`Ready to ship (${bagCounts(packed, legacyPacked, waitingByBag).ready})`}</Button>
+                <Button pressed={view === "sent"} onClick={() => switchView("sent")}>{`Sent (${buildBags(sentPackages, sentLegacy).length})`}</Button>
               </ButtonGroup>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -967,8 +975,10 @@ export default function PackCheck() {
               />
             </Layout.Section>
             <Layout.Section>
-              <PackedList packages={packed} legacy={legacyPacked} days={packedDays} loading={packedLoading} error={packedError}
-                undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} mode={view} query={bagQuery} waitingByBag={waitingByBag} />
+              <PackedList packages={view === "sent" ? sentPackages : packed} legacy={view === "sent" ? sentLegacy : legacyPacked}
+                days={packedDays} loading={packedLoading} error={packedError}
+                undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} mode={view} query={bagQuery}
+                waitingByBag={waitingByBag} unmatched={unmatchedDispatches} />
             </Layout.Section>
           </>
         )}

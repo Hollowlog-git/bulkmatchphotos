@@ -15,7 +15,8 @@ export type ConflictCode =
   | "not_found"
   | "cancelled"
   | "fulfilled"
-  | "order_changed";
+  | "order_changed"
+  | "dispatched";
 export interface Conflict { ref: string; code: ConflictCode; reason: string }
 
 // --- Trade Me purchases vs the latest synced snapshot -----------------------

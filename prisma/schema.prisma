@@ -213,3 +213,48 @@ model TradeMeBuyer {
 
   @@unique([shop, email])
 }
+
+// Local dispatch contract v1. Every dispatch event the local app sends is
+// stored once, immutably, keyed by its eventId (a reused id with different
+// content is a conflict). Never deleted.
+model DispatchReceipt {
+  id               String    @id @default(cuid())
+  shop             String
+  eventId          String
+  contentHash      String
+  groupKey         String
+  revision         Int
+  status           String // dispatched | dispatch_undone
+  purchaseIds      String // JSON array
+  shopifyOrderIds  String // JSON array
+  dispatchedAt     DateTime?
+  dispatchUndoneAt DateTime?
+  observedAt       DateTime
+  source           String
+  tracking         String // JSON array of { purchaseId, reference, status }
+  applied          Boolean // false if a newer revision for the group had already been applied
+  receivedAt       DateTime  @default(now())
+
+  @@unique([shop, eventId])
+  @@index([shop, groupKey])
+}
+
+// The latest applied dispatch revision per local parcel (groupKey). "Sent"
+// in Pack Check comes from here (status = dispatched), separately from
+// physical packing history.
+model DispatchState {
+  id              String    @id @default(cuid())
+  shop            String
+  groupKey        String
+  revision        Int
+  eventId         String
+  status          String
+  purchaseIds     String // JSON array
+  shopifyOrderIds String // JSON array
+  dispatchedAt    DateTime?
+  source          String
+  tracking        String // JSON array
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([shop, groupKey])
+}

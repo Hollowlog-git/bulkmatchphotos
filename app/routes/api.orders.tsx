@@ -1,6 +1,7 @@
 import type { LoaderFunctionArgs } from "@react-router/node";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { loadSentIndex } from "../lib/dispatch.server";
 
 const PAGE_SIZE = 50;
 const MAX_ORDERS = 150;
@@ -147,8 +148,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       (await db.packedOrder.findMany({ where: { shop: session.shop }, select: { orderId: true } })).map((p) => p.orderId),
     );
 
+    // Orders the local app reports as dispatched (dispatch contract v1)
+    // aren't to pack either, even though Shopify still shows them unfulfilled.
+    const sentOrders = (await loadSentIndex(session.shop)).orders;
+
     const orders = edgesAll.slice(0, MAX_ORDERS)
-      .filter((edge: any) => !packedIds.has(edge.node.id))
+      .filter((edge: any) => !packedIds.has(edge.node.id) && !sentOrders.has(edge.node.id))
       .filter((edge: any) => !edge.node.cancelledAt)
       // Unpaid (pending) orders are included so they can be prepacked;
       // Pack Check marks them "payment outstanding — do not send".
