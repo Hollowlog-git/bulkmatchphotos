@@ -375,3 +375,20 @@ when it was first packed and added to, every package's contents with its own
 Undo, and one verdict. That verdict is "🚫 Don't send yet" until nothing is
 left to pack, no same-buyer items are waiting in another parcel, and payment
 and shipping are cleared. Only then does it say "✅ OK to send".
+
+## Packed vs Ready to ship
+
+Pack Check's header switch has three views:
+- **To pack**: the packing screen.
+- **Packed**: bags packed but not ready to send, with each bag's
+  "🚫 Don't send yet" reasons, contents and Undo.
+- **Ready to ship**: bags that are fully packed, have nothing from the same
+  buyer waiting in another parcel, and are paid and shipping-cleared. They're
+  shown as a list with the bag code, packed date, order numbers, contents and
+  full delivery address, plus the buyer's name and **Trade Me username**.
+  A bag with more than one distinct address is flagged.
+
+The same rule (`lib/bagVerdict.ts`) decides the tab counts, which view a bag
+appears in, and its verdict line. On Packed and Ready to ship, a search bar
+filters by name, Trade Me username, email, bag code, order number, SKU, card
+title or address.

@@ -9,7 +9,7 @@ import { assignPackKeys } from "../lib/tradeMeMerge";
 import { Thumb } from "../components/Thumb";
 import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
-import { PackedList, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
+import { PackedList, bagCounts, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
 import { CLEARANCE_LABEL, combineClearance, shopifyOrderClearance, tradeMeJobClearance } from "../lib/clearance";
 import { buildWaitingBags, matchBags, type BagIdentity, type BagMatch, type WaitingBagFull } from "../lib/bagMatch";
 
@@ -145,8 +145,11 @@ export default function PackCheck() {
   const [fulfillMsg, setFulfillMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const movingRef = useRef(false);
   // "To pack" (the packing screen) or "Packed" (packed but not yet sent).
-  const [view, setView] = useState<"topack" | "packed">("topack");
-  const viewRef = useRef<"topack" | "packed">("topack");
+  // "To pack" (packing screen), "Packed" (packed, don't send yet) or
+  // "Ready to ship" (packed, paid, cleared).
+  const [view, setView] = useState<"topack" | "packed" | "ready">("topack");
+  const viewRef = useRef<"topack" | "packed" | "ready">("topack");
+  const [bagQuery, setBagQuery] = useState("");
   const [packed, setPacked] = useState<PackedPackageView[]>([]);
   const [legacyPacked, setLegacyPacked] = useState<LegacyPackedParcel[]>([]);
   // The packer's answer to "add to this existing bag?" per package (suggest
@@ -415,10 +418,10 @@ export default function PackCheck() {
   }
   useEffect(() => { fetchPacked(); }, []);
 
-  function switchView(next: "topack" | "packed") {
+  function switchView(next: "topack" | "packed" | "ready") {
     viewRef.current = next;
     setView(next);
-    if (next === "packed") fetchPacked();
+    if (next !== "topack") fetchPacked();
   }
 
   async function undoPacked(pkg: PackedPackageView) {
@@ -542,7 +545,7 @@ export default function PackCheck() {
   // ── KEY CAPTURE ───────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (viewRef.current === "packed") return; // no packing shortcuts on the Packed view
+      if (viewRef.current !== "topack") return; // packing shortcuts only on To pack
       const tag = (e.target as HTMLElement).tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON";
       const scanFocused = document.activeElement === scanRef.current;
@@ -911,7 +914,8 @@ export default function PackCheck() {
               <Text variant="headingLg" as="h1">Pack Check</Text>
               <ButtonGroup variant="segmented">
                 <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
-                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${new Set(packed.map((p: any) => p.bagId ?? p.id)).size + legacyPacked.length})`}</Button>
+                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${bagCounts(packed, legacyPacked).packed})`}</Button>
+                <Button pressed={view === "ready"} onClick={() => switchView("ready")}>{`Ready to ship (${bagCounts(packed, legacyPacked).ready})`}</Button>
               </ButtonGroup>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -931,15 +935,25 @@ export default function PackCheck() {
               >
                 {muted ? "🔇" : "🔊"}
               </button>
-              <Button onClick={() => (view === "packed" ? fetchPacked() : fetchOrders(false))} loading={view === "packed" ? packedLoading : loadingOrders}>Refresh</Button>
+              <Button onClick={() => (view !== "topack" ? fetchPacked() : fetchOrders(false))} loading={view !== "topack" ? packedLoading : loadingOrders}>Refresh</Button>
             </div>
           </div>
         </Layout.Section>
 
-        {view === "packed" && (
-          <Layout.Section>
-            <PackedList packages={packed} legacy={legacyPacked} days={packedDays} loading={packedLoading} error={packedError} undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} />
-          </Layout.Section>
+        {view !== "topack" && (
+          <>
+            <Layout.Section>
+              <TextField
+                label="Search bags" labelHidden autoComplete="off" clearButton onClearButtonClick={() => setBagQuery("")}
+                value={bagQuery} onChange={setBagQuery}
+                placeholder="Search name, Trade Me username, bag code, order #, SKU or address…"
+              />
+            </Layout.Section>
+            <Layout.Section>
+              <PackedList packages={packed} legacy={legacyPacked} days={packedDays} loading={packedLoading} error={packedError}
+                undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} mode={view} query={bagQuery} />
+            </Layout.Section>
+          </>
         )}
 
         {view === "topack" && (<>

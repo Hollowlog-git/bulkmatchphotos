@@ -34,6 +34,8 @@ import {
 // DELETE { packageId }  — undo: the package goes back to "To pack"
 
 const PACKED_VIEW_DAYS = 14;
+
+interface ShipTo { source: "Trade Me" | "Shopify"; name: string | null; username: string | null; lines: string[] }
 const MAX_SNAPSHOT_ITEMS = 200;
 
 const str = (v: unknown, max = 500) => (typeof v === "string" ? v.slice(0, max) : "");
@@ -82,7 +84,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const allIds = [...new Set(packages.flatMap((p) => JSON.parse(p.shopifyOrderIds) as string[]))];
   const fulfilled = new Set<string>();
   const shopifyClearance = new Map<string, Clearance>();
-  const shopifyIdentity = new Map<string, { email: string | null; address: { address1: string; zip: string } | null }>();
+  const shopifyIdentity = new Map<string, { email: string | null; address: { address1: string; zip: string } | null; shipTo: ShipTo | null }>();
   for (let i = 0; i < allIds.length; i += 100) {
     const res = await admin.graphql(
       `#graphql
@@ -94,7 +96,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             displayFinancialStatus
             cancelledAt
             email
-            shippingAddress { address1 zip }
+            shippingAddress { name address1 address2 city province zip country }
           }
         }
       }`,
@@ -104,7 +106,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     for (const n of data?.data?.nodes ?? []) {
       if (n?.id && n.displayFulfillmentStatus === "FULFILLED") fulfilled.add(n.id);
       if (n?.id) shopifyClearance.set(n.id, shopifyOrderClearance(n.displayFinancialStatus, !!n.cancelledAt));
-      if (n?.id) shopifyIdentity.set(n.id, { email: n.email ?? null, address: n.shippingAddress?.address1 ? { address1: n.shippingAddress.address1, zip: n.shippingAddress.zip ?? "" } : null });
+      if (n?.id) {
+        const a = n.shippingAddress;
+        shopifyIdentity.set(n.id, {
+          email: n.email ?? null,
+          address: a?.address1 ? { address1: a.address1, zip: a.zip ?? "" } : null,
+          shipTo: a ? {
+            source: "Shopify", name: a.name ?? null, username: null,
+            lines: [a.address1, a.address2, [a.city, a.province].filter(Boolean).join(", "), [a.zip, a.country].filter(Boolean).join(" ")]
+              .map((x: string | null) => (x ?? "").trim()).filter(Boolean),
+          } : null,
+        });
+      }
     }
   }
 
@@ -187,6 +200,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { groupKeys: [...groupKeys], usernames: [...usernames], emails: [...emails], addresses };
   };
 
+  // Where to send it: every distinct delivery address in the package, with
+  // the buyer's name and Trade Me username (for the Ready to ship list).
+  const shipToOf = (purchaseIds: string[], orderIds: string[]): ShipTo[] => {
+    const out: ShipTo[] = [];
+    const seen = new Set<string>();
+    const add = (t: ShipTo | null) => {
+      if (!t) return;
+      const key = t.lines.join("|").toLowerCase();
+      const existing = out.find((o) => o.lines.join("|").toLowerCase() === key);
+      if (existing) { existing.username ??= t.username; existing.name ??= t.name; return; }
+      if (!seen.has(key)) { seen.add(key); out.push({ ...t }); }
+    };
+    const jobsSeen = new Set<string>();
+    for (const id of purchaseIds) {
+      const job = jobByPurchase.get(id);
+      if (!job || jobsSeen.has(job.groupKey)) continue;
+      jobsSeen.add(job.groupKey);
+      add({
+        source: "Trade Me", name: job.buyerName ?? null, username: job.buyerUsername ?? null,
+        lines: (job.deliveryAddress ?? "").split(/\r?\n|,\s*/).map((x) => x.trim()).filter(Boolean),
+      });
+    }
+    for (const id of orderIds) add(shopifyIdentity.get(id)?.shipTo ?? null);
+    return out;
+  };
+
   // Same-buyer Trade Me items waiting to pack in a *different* parcel.
   const openJobs = await db.tradeMeJob.findMany({ where: { shop }, include: { items: true } });
   const possibleAdditions = (ident: { groupKeys: string[]; usernames: string[]; emails: string[] }) => {
@@ -203,7 +242,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       const tm = tradeMeStatus(l.purchaseIds);
       const identity = identityOf(l.purchaseIds, [], null);
       identity.groupKeys = [...new Set([...identity.groupKeys, l.groupKey])];
-      return { ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack, identity, possibleAdditions: possibleAdditions(identity) };
+      return { ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack, identity, possibleAdditions: possibleAdditions(identity), shipTo: shipToOf(l.purchaseIds, []) };
     }),
     packages: packages
       .map((p) => {
@@ -215,6 +254,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           bagId: p.bagId ?? p.id,
           bagCode: bagCode(p.bagId ?? p.id),
           identity: identityOf(purchaseIds, orderIds, snapshot),
+          shipTo: shipToOf(purchaseIds, orderIds),
           label: p.label,
           packedAt: p.packedAt.toISOString(),
           tradeMeItems: purchaseIds.length,
