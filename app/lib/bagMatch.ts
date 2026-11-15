@@ -146,3 +146,23 @@ export function buildWaitingBags(packages: PackedPkgLike[], legacy: LegacyLike[]
   }
   return bags;
 }
+
+// Items still in To pack that belong with a bag already packed (any source:
+// Shopify order, Omnivore order or Trade Me parcel), using the same matching
+// as the "Add to existing bag" banner. A bag with any of these isn't ready to
+// ship. Ambiguous matches count against every candidate bag.
+export interface PendingPackage { identity: BagIdentity; labels: string[] }
+
+export function pendingAdditionsByBag(pending: PendingPackage[], bags: WaitingBag[]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  const add = (bagId: string, labels: string[], note = "") => {
+    out[bagId] = [...(out[bagId] ?? []), ...labels.map((l) => l + note)];
+  };
+  for (const p of pending) {
+    const m = matchBags(p.identity, bags);
+    if (!m) continue;
+    if (m.kind === "ambiguous") m.bags.forEach((b) => add(b.bagId, p.labels, " (buyer has several bags — check)"));
+    else add(m.bag.bagId, p.labels, m.kind === "unconfirmed_address" ? " (different address — check)" : "");
+  }
+  return out;
+}

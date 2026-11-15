@@ -49,8 +49,8 @@ const BADGE_TONE: Record<string, "success" | "critical" | "warning" | "attention
 };
 
 // One plain verdict for a bag, plus the payment/shipping detail.
-export function SendStatus({ pkgs }: { pkgs: { clearance?: Clearance; remainingToPack?: number; possibleAdditions?: number }[] }) {
-  const v = bagVerdict(pkgs);
+export function SendStatus({ pkgs, waiting = [] }: { pkgs: { clearance?: Clearance; remainingToPack?: number; possibleAdditions?: number }[]; waiting?: string[] }) {
+  const v = bagVerdict(pkgs, waiting);
   return (
     <BlockStack gap="100">
       <div style={{ fontWeight: 700, fontSize: 14, color: v.ready ? "#047857" : "#b91c1c" }}>
@@ -90,6 +90,8 @@ interface BagView {
   items: { sku: string; title: string; quantity: number; imageUrl: string | null }[];
   ready: boolean;
   isTradeMe: boolean; // has Trade Me items or Trade Me-channel orders
+  waiting: string[]; // items in To pack that belong in this bag
+  siblings: string[]; // other bags for the same buyer (codes)
 }
 
 function uniqueShipTo(list: ShipTo[]): ShipTo[] {
@@ -102,7 +104,7 @@ function uniqueShipTo(list: ShipTo[]): ShipTo[] {
   return out;
 }
 
-export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedParcel[] = []): BagView[] {
+export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedParcel[] = [], waitingByBag: Record<string, string[]> = {}): BagView[] {
   const map = new Map<string, PackedPackageView[]>();
   for (const p of packages) map.set(p.bagId ?? p.id, [...(map.get(p.bagId ?? p.id) ?? []), p]);
   const bags: BagView[] = [...map.entries()].map(([key, pkgs]) => {
@@ -120,8 +122,10 @@ export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedPar
       shipTo,
       orderNames: pkgs.flatMap((p) => p.orders.map((o) => o.name)),
       items: pkgs.flatMap((p) => p.items),
-      ready: bagVerdict(pkgs).ready,
+      ready: bagVerdict(pkgs, waitingByBag[key] ?? []).ready,
       isTradeMe: pkgs.some((p) => p.tradeMeItems > 0 || p.orders.some((o) => o.channel === "Trade Me")),
+      waiting: waitingByBag[key] ?? [],
+      siblings: [],
     };
   });
   for (const l of legacy) {
@@ -138,15 +142,24 @@ export function buildBags(packages: PackedPackageView[], legacy: LegacyPackedPar
       shipTo,
       orderNames: [],
       items: l.purchaseIds.map((id) => ({ sku: "", title: `Trade Me purchase ${id}`, quantity: 1, imageUrl: null })),
-      ready: bagVerdict([l]).ready,
+      ready: bagVerdict([l], waitingByBag[`legacy:${l.groupKey}`] ?? []).ready,
       isTradeMe: true,
+      waiting: waitingByBag[`legacy:${l.groupKey}`] ?? [],
+      siblings: [],
     });
+  }
+  // Same buyer (email or Trade Me username) with more than one bag: flag so
+  // they're combined before sending rather than shipped twice.
+  const norm = (xs: string[]) => xs.map((x) => x.trim().toLowerCase()).filter(Boolean);
+  for (const b of bags) {
+    const ids = new Set([...norm(b.emails), ...norm(b.usernames)]);
+    b.siblings = bags.filter((o) => o !== b && [...norm(o.emails), ...norm(o.usernames)].some((x) => ids.has(x))).map((o) => o.code);
   }
   return bags.sort((a, b) => b.packedAt.localeCompare(a.packedAt));
 }
 
-export function bagCounts(packages: PackedPackageView[], legacy: LegacyPackedParcel[] = []) {
-  const bags = buildBags(packages, legacy);
+export function bagCounts(packages: PackedPackageView[], legacy: LegacyPackedParcel[] = [], waitingByBag: Record<string, string[]> = {}) {
+  const bags = buildBags(packages, legacy, waitingByBag);
   return { packed: bags.filter((b) => !b.ready).length, ready: bags.filter((b) => b.ready).length };
 }
 
@@ -193,7 +206,7 @@ function Address({ shipTo, isTradeMe, usernames }: { shipTo: ShipTo[]; isTradeMe
   );
 }
 
-export function PackedList({ packages, legacy = [], days, loading, error, undoingId, onUndo, onUndoLegacy, mode = "packed", query = "" }: {
+export function PackedList({ packages, legacy = [], days, loading, error, undoingId, onUndo, onUndoLegacy, mode = "packed", query = "", waitingByBag = {} }: {
   packages: PackedPackageView[];
   legacy?: LegacyPackedParcel[];
   onUndoLegacy?: (parcel: LegacyPackedParcel) => void;
@@ -204,10 +217,11 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
   onUndo: (pkg: PackedPackageView) => void;
   mode?: "packed" | "ready";
   query?: string;
+  waitingByBag?: Record<string, string[]>;
 }) {
   if (error) return <Card><Text as="p" tone="critical">⚠️ {error}</Text></Card>;
 
-  const all = buildBags(packages, legacy).filter((b) => (mode === "ready" ? b.ready : !b.ready));
+  const all = buildBags(packages, legacy, waitingByBag).filter((b) => (mode === "ready" ? b.ready : !b.ready));
   const bags = query.trim() ? all.filter((b) => matchesQuery(b, query)) : all;
 
   if (!loading && bags.length === 0) {
@@ -238,6 +252,7 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
                   <span style={{ fontFamily: "monospace", fontWeight: 800, fontSize: 14, background: "#ecfdf5", color: "#047857", padding: "2px 8px", borderRadius: 4, alignSelf: "flex-start" }}>{b.code}</span>
                   <Text as="span" variant="bodySm" tone="subdued">Packed {ago(b.packedAt)} · {units} item{units !== 1 ? "s" : ""}</Text>
                   {b.orderNames.length > 0 && <Text as="span" variant="bodySm" tone="subdued">{b.orderNames.join(", ")}</Text>}
+                  {b.siblings.length > 0 && <span style={{ fontSize: 12, fontWeight: 700, color: "#b45309" }}>⚠️ Same buyer also has {b.siblings.join(", ")} — combine before sending</span>}
                 </BlockStack>
                 <Address shipTo={b.shipTo} isTradeMe={b.isTradeMe} usernames={b.usernames} />
                 <div style={{ fontSize: 12, color: "#555", lineHeight: 1.5 }}>
@@ -277,7 +292,7 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
                     <Button tone="critical" loading={undoingId === `legacy:${l.groupKey}`} onClick={() => onUndoLegacy(l)}>Undo packed</Button>
                   )}
                 </InlineStack>
-                <SendStatus pkgs={[l]} />
+                <SendStatus pkgs={[l]} waiting={b.waiting} />
               </BlockStack>
             </Card>
           );
@@ -296,7 +311,8 @@ export function PackedList({ packages, legacy = [], days, loading, error, undoin
                   Packed {ago(first.packedAt)}{b.pkgs.length > 1 ? ` · added to ${b.pkgs.length - 1} time${b.pkgs.length > 2 ? "s" : ""} since` : ""} · {units} item{units !== 1 ? "s" : ""}{first.email ? ` · ${first.email}` : ""}
                 </Text>
               </BlockStack>
-              <SendStatus pkgs={b.pkgs} />
+              <SendStatus pkgs={b.pkgs} waiting={b.waiting} />
+              {b.siblings.length > 0 && <Text as="span" variant="bodySm" fontWeight="semibold" tone="caution">⚠️ Same buyer also has {b.siblings.join(", ")} — combine before sending</Text>}
               {b.pkgs.map((p) => (
                 <BlockStack key={p.id} gap="150">
                   <InlineStack align="space-between" blockAlign="center" wrap>

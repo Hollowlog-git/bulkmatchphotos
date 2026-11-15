@@ -11,7 +11,7 @@ import { buildPackItems } from "../lib/packItems";
 import { OrderPicker, type OrderPickerOption } from "../components/OrderPicker";
 import { PackedList, bagCounts, type LegacyPackedParcel, type PackedPackageView } from "../components/PackedList";
 import { CLEARANCE_LABEL, combineClearance, shopifyOrderClearance, tradeMeJobClearance } from "../lib/clearance";
-import { buildWaitingBags, matchBags, type BagIdentity, type BagMatch, type WaitingBagFull } from "../lib/bagMatch";
+import { buildWaitingBags, matchBags, pendingAdditionsByBag, type BagIdentity, type BagMatch, type WaitingBagFull } from "../lib/bagMatch";
 
 // Who a package is for, for matching it to bags already packed.
 function packageIdentity(orders: Order[]): BagIdentity {
@@ -174,6 +174,10 @@ export default function PackCheck() {
   // Number of CLEAR items the local Trade Me app is currently sending. The
   // Clearance week controls only appear while there are some.
   const [clearanceCount, setClearanceCount] = useState(0);
+  // Every Trade Me parcel the local app sent (whatever the Clearance week
+  // setting), so packed bags can tell when something of theirs is still in
+  // To pack.
+  const [tmOrdersAll, setTmOrdersAll] = useState<Order[]>([]);
   const [tradeMeError, setTradeMeError] = useState<string | null>(null);
   // Set when Shopify had more open orders than /api/orders loads (150).
   const [ordersCapped, setOrdersCapped] = useState<number | null>(null);
@@ -276,6 +280,7 @@ export default function PackCheck() {
         if (!tmRes.ok) throw new Error(`HTTP ${tmRes.status}`);
         const tmData = await tmRes.json();
         const tmOrders: Order[] = tmData.orders ?? [];
+        setTmOrdersAll(tmOrders);
         setClearanceCount(tmOrders.reduce((n, o) =>
           n + o.lineItems.filter(li => /^CLEAR-/i.test(li.sku || "")).reduce((q, li) => q + li.quantity, 0), 0));
         if (includeTradeMeRef.current) fetched = assignPackKeys([...fetched, ...tmOrders]);
@@ -688,6 +693,18 @@ export default function PackCheck() {
   const currentClearance = clearanceAll && (clearanceAll.state !== "cleared" || selectedOrders.some(o => o.tradeMe)) ? clearanceAll : null;
   const prepackedAlready = selectedOrders.reduce((n, o) => n + (o.tradeMe?.alreadyPackedItems ?? 0), 0);
   const waitingBags = buildWaitingBags(packed as any, legacyPacked as any);
+  // Everything still in To pack (all Shopify orders + all Trade Me parcels,
+  // ignoring the view filters), as packages, matched to packed bags. A bag
+  // with something waiting isn't ready to ship.
+  const waitingByBag = (() => {
+    const all = assignPackKeys([...orders.filter(o => !o.tradeMe), ...tmOrdersAll]);
+    const groups = new Map<string, Order[]>();
+    for (const o of all) groups.set(packKeyOf(o), [...(groups.get(packKeyOf(o)) ?? []), o]);
+    return pendingAdditionsByBag([...groups.values()].map(g => ({
+      identity: packageIdentity(g),
+      labels: g.flatMap(o => o.tradeMe ? o.lineItems.map(li => li.sku || li.title) : [o.name]),
+    })), waitingBags);
+  })();
   const bagMatch: BagMatch | null = selectedOrders.length ? matchBags(packageIdentity(selectedOrders), waitingBags) : null;
   function chooseBag(choice: "add" | "separate") {
     const next = { ...bagChoiceRef.current, [selectValue]: choice };
@@ -914,8 +931,8 @@ export default function PackCheck() {
               <Text variant="headingLg" as="h1">Pack Check</Text>
               <ButtonGroup variant="segmented">
                 <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
-                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${bagCounts(packed, legacyPacked).packed})`}</Button>
-                <Button pressed={view === "ready"} onClick={() => switchView("ready")}>{`Ready to ship (${bagCounts(packed, legacyPacked).ready})`}</Button>
+                <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${bagCounts(packed, legacyPacked, waitingByBag).packed})`}</Button>
+                <Button pressed={view === "ready"} onClick={() => switchView("ready")}>{`Ready to ship (${bagCounts(packed, legacyPacked, waitingByBag).ready})`}</Button>
               </ButtonGroup>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -951,7 +968,7 @@ export default function PackCheck() {
             </Layout.Section>
             <Layout.Section>
               <PackedList packages={packed} legacy={legacyPacked} days={packedDays} loading={packedLoading} error={packedError}
-                undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} mode={view} query={bagQuery} />
+                undoingId={undoingId} onUndo={undoPacked} onUndoLegacy={undoLegacyPacked} mode={view} query={bagQuery} waitingByBag={waitingByBag} />
             </Layout.Section>
           </>
         )}
