@@ -6,7 +6,10 @@ import { CLEARANCE_LABEL, type Clearance, type ClearanceState } from "./clearanc
 //   - every source is cleared (goods paid, shipping cleared, no hold).
 // Anything else is "don't send yet", with the reasons.
 
-interface PkgLike { clearance?: Clearance; remainingToPack?: number; possibleAdditions?: number }
+interface PkgLike {
+  clearance?: Clearance; remainingToPack?: number; possibleAdditions?: number;
+  sentState?: { state: "sent" | "partial" | "unsent"; sent: number; total: number };
+}
 
 const RANK: ClearanceState[] = ["blocked", "payment_outstanding", "shipping_not_cleared", "unknown", "cleared"];
 
@@ -22,6 +25,8 @@ export function bagVerdict(pkgs: PkgLike[], waitingInToPack: string[] = []) {
   const holds = [
     remainingToPack ? `${remainingToPack} new item${remainingToPack !== 1 ? "s" : ""} still to pack` : "",
     possibleAdditions ? `${possibleAdditions} item${possibleAdditions !== 1 ? "s" : ""} from the same buyer waiting in another parcel — check whether they go in this bag` : "",
+    ...pkgs.filter((p) => p.sentState?.state === "partial")
+      .map((p) => `partly sent already (${p.sentState!.sent} of ${p.sentState!.total}) — check what's left`),
     waitingInToPack.length ? `waiting in To pack to be added: ${waitingInToPack.slice(0, 6).join(", ")}${waitingInToPack.length > 6 ? ` +${waitingInToPack.length - 6} more` : ""}` : "",
     clearance.state !== "cleared" ? CLEARANCE_LABEL[clearance.state].toLowerCase() : "",
   ].filter(Boolean);

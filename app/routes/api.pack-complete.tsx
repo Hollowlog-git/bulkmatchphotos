@@ -7,6 +7,8 @@ import { writeUnpackedEvents } from "../lib/unpack.server";
 import { combineClearance, shopifyOrderClearance, tradeMeJobClearance, type Clearance } from "../lib/clearance";
 import { isPickableSku } from "../lib/tradeMeItems";
 import { bagCode } from "../lib/bagMatch";
+import { loadSentIndex } from "../lib/dispatch.server";
+import { packageSentState } from "../lib/dispatch";
 
 async function purchaseIdsInPackages(shop: string): Promise<Set<string>> {
   const pkgs = await db.packedPackage.findMany({ where: { shop }, select: { purchaseIds: true } });
@@ -33,7 +35,8 @@ import {
 //          [addToBagId]  — file it in an existing bag (see lib/bagMatch.ts)
 // DELETE { packageId }  — undo: the package goes back to "To pack"
 
-const PACKED_VIEW_DAYS = 14;
+// Packed, Ready to ship and Sent history cover packages from this many days.
+const PACKED_VIEW_DAYS = 30;
 
 interface ShipTo { source: "Trade Me" | "Shopify"; name: string | null; username: string | null; lines: string[] }
 const MAX_SNAPSHOT_ITEMS = 200;
@@ -253,43 +256,79 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .reduce((n, j) => n + j.items.filter((i) => !packedNow.has(i.purchaseId) && isPickableSku(i.sku)).length, 0);
   };
 
+  // ── Sent (local dispatch contract v1, or Shopify fulfilment) ──────────
+  // A package is sent only when every constituent purchase/order is sent;
+  // partly sent packages stay visible and flagged. Matching is by exact IDs
+  // against package membership, so a parcel gone from the active sync still
+  // matches.
+  const sentIdx = await loadSentIndex(shop);
+  const dispatchInfo = (purchaseIds: string[], orderIds: string[]) => {
+    const infos = [...purchaseIds.map((id) => sentIdx.purchases.get(id)), ...orderIds.map((id) => sentIdx.orders.get(id))].filter((x): x is NonNullable<typeof x> => !!x);
+    if (!infos.length) return null;
+    const dates = infos.map((i) => i.dispatchedAt).filter((d): d is string => !!d).sort();
+    return {
+      provenance: "local dispatch",
+      dispatchedAt: dates.length ? dates[dates.length - 1] : null,
+      tracking: [...new Set(infos.flatMap((i) => i.tracking))],
+      sources: [...new Set(infos.map((i) => i.source))],
+    };
+  };
+
+  const legacyOut = legacy.map((l) => {
+    const tm = tradeMeStatus(l.purchaseIds);
+    const identity = identityOf(l.purchaseIds, [], null);
+    identity.groupKeys = [...new Set([...identity.groupKeys, l.groupKey])];
+    return {
+      ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack, identity,
+      possibleAdditions: possibleAdditions(identity), shipTo: shipToOf(l.purchaseIds, []),
+      sentState: packageSentState(l.purchaseIds, [], sentIdx, new Set()), dispatch: dispatchInfo(l.purchaseIds, []),
+    };
+  });
+  const pkgOut = packages.map((p) => {
+    const orderIds = JSON.parse(p.shopifyOrderIds) as string[];
+    const purchaseIds = JSON.parse(p.purchaseIds) as string[];
+    const snapshot = JSON.parse(p.snapshot);
+    const tm = tradeMeStatus(purchaseIds);
+    const shopifySources = orderIds.map((id) => shopifyClearance.get(id) ?? { state: "unknown" as const, reasons: ["Shopify status unavailable"] });
+    const identity = identityOf(purchaseIds, orderIds, snapshot);
+    return {
+      id: p.id,
+      bagId: p.bagId ?? p.id,
+      bagCode: bagCode(p.bagId ?? p.id),
+      identity,
+      shipTo: shipToOf(purchaseIds, orderIds),
+      label: p.label,
+      packedAt: p.packedAt.toISOString(),
+      tradeMeItems: purchaseIds.length,
+      ...snapshot,
+      orders: (snapshot.orders ?? []).map((o: any) => ({ ...o, sent: fulfilled.has(o.id) || sentIdx.orders.has(o.id) })),
+      sentState: packageSentState(purchaseIds, orderIds, sentIdx, fulfilled),
+      dispatch: dispatchInfo(purchaseIds, orderIds),
+      clearance: combineClearance([...shopifySources, ...tm.sources]),
+      remainingToPack: tm.remainingToPack,
+      possibleAdditions: possibleAdditions(identity),
+    };
+  });
+
+  // Dispatch receipts that match no packed package or packed item (kept,
+  // and re-matched on every load).
+  const everyPkg = await db.packedPackage.findMany({ where: { shop }, select: { purchaseIds: true, shopifyOrderIds: true } });
+  const knownPurchases = new Set([
+    ...everyPkg.flatMap((p) => JSON.parse(p.purchaseIds) as string[]),
+    ...(await db.tradeMePackedItem.findMany({ where: { shop }, select: { purchaseId: true } })).map((r) => r.purchaseId),
+  ]);
+  const knownOrders = new Set(everyPkg.flatMap((p) => JSON.parse(p.shopifyOrderIds) as string[]));
+  const unmatchedDispatches = sentIdx.states
+    .filter((st) => st.status === "dispatched" && !st.purchaseIds.some((id) => knownPurchases.has(id)) && !st.shopifyOrderIds.some((id) => knownOrders.has(id)))
+    .map((st) => ({ groupKey: st.groupKey, purchaseIds: st.purchaseIds, shopifyOrderIds: st.shopifyOrderIds, dispatchedAt: st.dispatchedAt, tracking: st.tracking.map((t) => t.reference) }));
+
   return Response.json({
     days: PACKED_VIEW_DAYS,
-    legacy: legacy.map((l) => {
-      const tm = tradeMeStatus(l.purchaseIds);
-      const identity = identityOf(l.purchaseIds, [], null);
-      identity.groupKeys = [...new Set([...identity.groupKeys, l.groupKey])];
-      return { ...l, clearance: combineClearance(tm.sources), remainingToPack: tm.remainingToPack, identity, possibleAdditions: possibleAdditions(identity), shipTo: shipToOf(l.purchaseIds, []) };
-    }),
-    packages: packages
-      .map((p) => {
-        const orderIds = JSON.parse(p.shopifyOrderIds) as string[];
-        const purchaseIds = JSON.parse(p.purchaseIds) as string[];
-        const snapshot = JSON.parse(p.snapshot);
-        return {
-          id: p.id,
-          bagId: p.bagId ?? p.id,
-          bagCode: bagCode(p.bagId ?? p.id),
-          identity: identityOf(purchaseIds, orderIds, snapshot),
-          shipTo: shipToOf(purchaseIds, orderIds),
-          label: p.label,
-          packedAt: p.packedAt.toISOString(),
-          tradeMeItems: purchaseIds.length,
-          ...snapshot,
-          orders: (snapshot.orders ?? []).map((o: any) => ({ ...o, sent: fulfilled.has(o.id) })),
-          // A package with Shopify orders counts as sent once all of them are
-          // fulfilled. Trade Me-only packages can't be checked from here
-          // (dispatch is tracked in the local app), so they stay listed.
-          sent: orderIds.length > 0 && orderIds.every((id) => fulfilled.has(id)),
-          ...(() => {
-            const tm = tradeMeStatus(purchaseIds);
-            const shopifySources = orderIds.map((id) => shopifyClearance.get(id) ?? { state: "unknown" as const, reasons: ["Shopify status unavailable"] });
-            return { clearance: combineClearance([...shopifySources, ...tm.sources]), remainingToPack: tm.remainingToPack };
-          })(),
-        };
-      })
-      .filter((p) => !p.sent)
-      .map((p: any) => ({ ...p, possibleAdditions: possibleAdditions(p.identity) })),
+    legacy: legacyOut.filter((l) => l.sentState.state !== "sent"),
+    packages: pkgOut.filter((p) => p.sentState.state !== "sent"),
+    sentLegacy: legacyOut.filter((l) => l.sentState.state === "sent"),
+    sentPackages: pkgOut.filter((p) => p.sentState.state === "sent"),
+    unmatchedDispatches,
   });
 };
 
@@ -381,6 +420,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       ),
       ...checkShopifyOrders(shopifyOrders, live as Map<string, any>, new Set(packedOrders.map((p) => p.orderId))),
     ];
+    // Already dispatched by the local app: never record packing for it.
+    const sentNow = await loadSentIndex(shop);
+    for (const p of tradeMePurchases) if (sentNow.purchases.has(p.purchaseId)) conflicts.push({ ref: p.purchaseId, code: "dispatched", reason: "already dispatched (local app)" });
+    for (const o of shopifyOrders) if (sentNow.orders.has(o.id)) conflicts.push({ ref: o.name, code: "dispatched", reason: "already dispatched (local app)" });
     if (conflicts.length) {
       console.log(`[pack-complete] refused shop=${shop} conflicts=${JSON.stringify(conflicts)}`);
       return Response.json({ error: "This package changed since it was loaded", conflicts }, { status: 409 });

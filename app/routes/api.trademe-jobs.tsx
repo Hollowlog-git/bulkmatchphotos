@@ -2,6 +2,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@react-router/node"
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 import { isPickableSku } from "../lib/tradeMeItems";
+import { loadSentIndex } from "../lib/dispatch.server";
 
 // Pack Check's view of the Trade Me jobs pushed by the local app
 // (see api.trademe-sync.tsx). Jobs are returned in the same shape as
@@ -24,6 +25,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     db.tradeMePackedItem.findMany({ where: { shop }, select: { purchaseId: true } }),
   ]);
   const packedIds = new Set(packed.map((p) => p.purchaseId));
+  const sent = await loadSentIndex(shop);
 
   const orders = jobs
     .map((job) => {
@@ -34,7 +36,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         // Pack Check's own packed records are the authority. The snapshot's
         // `packed` flag only mirrors them (prepacking v1 sends packed lines
         // too, as parcel metadata), so it never hides or shows a card.
-        (i) => !packedIds.has(i.purchaseId) && isPickableSku(i.sku),
+        // Dispatched by the local app (dispatch contract v1): not to pack.
+        (i) => !packedIds.has(i.purchaseId) && !sent.purchases.has(i.purchaseId) && isPickableSku(i.sku),
       );
       if (!items.length) return null;
       // Oldest sale in the job stands in for the order date; fall back to the
