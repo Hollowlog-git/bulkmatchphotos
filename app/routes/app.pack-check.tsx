@@ -322,6 +322,7 @@ export default function PackCheck() {
     includeTradeMeRef.current = next;
     setIncludeTradeMe(next);
     try { localStorage.setItem("packcheck_trademe", next ? "1" : "0"); } catch {}
+    if (!next) switchView("topack"); // the status views are Clearance week only
     fetchOrders(false);
   }
 
@@ -700,6 +701,13 @@ export default function PackCheck() {
   const currentClearance = clearanceAll && (clearanceAll.state !== "cleared" || selectedOrders.some(o => o.tradeMe)) ? clearanceAll : null;
   const prepackedAlready = selectedOrders.reduce((n, o) => n + (o.tradeMe?.alreadyPackedItems ?? 0), 0);
   const waitingBags = buildWaitingBags(packed as any, legacyPacked as any);
+  // Clearance week mode: the status views (Packed / Ready to ship / Sent)
+  // and the existing-bag prompts only show while it's on. The button stays
+  // available while CLEAR items are coming through OR packed bags are still
+  // waiting to be sent, so the Ready to ship list can't disappear on you.
+  const clearanceAvailable = clearanceCount > 0 || packed.length > 0 || legacyPacked.length > 0;
+  const clearanceOn = includeTradeMe && clearanceAvailable;
+  useEffect(() => { if (!clearanceOn && viewRef.current !== "topack") switchView("topack"); }, [clearanceOn]);
   // Everything still in To pack (all Shopify orders + all Trade Me parcels,
   // ignoring the view filters), as packages, matched to packed bags. A bag
   // with something waiting isn't ready to ship.
@@ -885,7 +893,7 @@ export default function PackCheck() {
       const linked = customerOrders.some(o => o.tradeMe) && customerOrders.some(o => !o.tradeMe);
       const sendState = sendClearance(customerOrders).state;
       const bm = matchBags(packageIdentity(customerOrders), waitingBags);
-      const bagMark = !bm ? "" : bm.kind === "definite" ? " ➕ Add to existing bag" : bm.kind === "suggest" ? " ➕? existing bag" : " ❔ bag";
+      const bagMark = !clearanceOn || !bm ? "" : bm.kind === "definite" ? " ➕ Add to existing bag" : bm.kind === "suggest" ? " ➕? existing bag" : " ❔ bag";
       const sendMark = sendState === "cleared" ? "" : sendState === "payment_outstanding" ? " 💳 prepack" : sendState === "blocked" ? " ⛔" : sendState === "shipping_not_cleared" ? " 📮" : " ❔";
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
       const orderCount = customerOrders.length;
@@ -936,15 +944,15 @@ export default function PackCheck() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
               <Text variant="headingLg" as="h1">Pack Check</Text>
-              <ButtonGroup variant="segmented">
+              {clearanceOn && <ButtonGroup variant="segmented">
                 <Button pressed={view === "topack"} onClick={() => switchView("topack")}>{`To pack (${packageCount})`}</Button>
                 <Button pressed={view === "packed"} onClick={() => switchView("packed")}>{`Packed (${bagCounts(packed, legacyPacked, waitingByBag).packed})`}</Button>
                 <Button pressed={view === "ready"} onClick={() => switchView("ready")}>{`Ready to ship (${bagCounts(packed, legacyPacked, waitingByBag).ready})`}</Button>
                 <Button pressed={view === "sent"} onClick={() => switchView("sent")}>{`Sent (${buildBags(sentPackages, sentLegacy).length})`}</Button>
-              </ButtonGroup>
+              </ButtonGroup>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {clearanceCount > 0 && (
+              {clearanceAvailable && (
                 <Button onClick={toggleTradeMe} pressed={includeTradeMe}>
                   {`${includeTradeMe ? "✓ " : ""}Clearance week (${clearanceCount})`}
                 </Button>
@@ -1022,7 +1030,7 @@ export default function PackCheck() {
         )}
 
         {/* ── EXISTING BAG: this buyer already has a packed bag waiting ── */}
-        {bagMatch && (() => {
+        {clearanceOn && bagMatch && (() => {
           const bag = bagMatch.kind === "ambiguous" ? null : bagMatch.bag;
           const contents = bag ? bag.items.map(i => i.sku || i.title).slice(0, 12).join(", ") + (bag.items.length > 12 ? ` +${bag.items.length - 12} more` : "") : "";
           const head = bag ? `${bag.code} · ${bag.label} · packed ${bagAgo(bag.packedAt)} · ${bag.items.reduce((n, i) => n + i.quantity, 0)} items` : "";
