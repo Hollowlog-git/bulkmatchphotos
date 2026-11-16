@@ -257,7 +257,8 @@ export default function PackCheck() {
       if (!groups.has(packKeyOf(order))) groups.set(packKeyOf(order), []);
       groups.get(packKeyOf(order))!.push(order);
     }
-    if (!showTradeMeRef.current) {
+    // The Trade Me filter only applies during Clearance week.
+    if (includeTradeMeRef.current && !showTradeMeRef.current) {
       for (const [key, group] of groups) {
         if (group.some(o => o.tradeMe || o.channel === "Trade Me")) groups.delete(key);
       }
@@ -270,7 +271,7 @@ export default function PackCheck() {
   const fetchOrders = useCallback(async (restoreSession = true) => {
     setLoadingOrders(true);
     try {
-      const res = await fetch("/api/orders");
+      const res = await fetch(`/api/orders?mode=${includeTradeMeRef.current ? "clearance" : "normal"}`);
       const data = await res.json();
       let fetched: Order[] = data.orders ?? [];
       setOrdersCapped(data.truncated ? (data.maxOrders ?? fetched.length) : null);
@@ -357,7 +358,9 @@ export default function PackCheck() {
       const next = sorted[keys.indexOf(currentKey) + 1];
 
       const items = packItemsRef.current;
-      const complete = !!currentKey && items.length > 0 && items.every(i => i.scanned === i.quantity);
+      // Packing is only recorded during Clearance week. Normally Next Order
+      // just moves on; the order leaves the list once it's dispatched.
+      const complete = includeTradeMeRef.current && !!currentKey && items.length > 0 && items.every(i => i.scanned === i.quantity);
       let remaining = allOrders;
       let packedLabel = "";
       if (complete) {
@@ -706,7 +709,9 @@ export default function PackCheck() {
   // available while CLEAR items are coming through OR packed bags are still
   // waiting to be sent, so the Ready to ship list can't disappear on you.
   const clearanceAvailable = clearanceCount > 0 || packed.length > 0 || legacyPacked.length > 0;
-  const clearanceOn = includeTradeMe && clearanceAvailable;
+  // Clearance week mode is simply the toggle. The button shows whenever it's
+  // on (so it can always be turned off) or there's clearance work about.
+  const clearanceOn = includeTradeMe;
   useEffect(() => { if (!clearanceOn && viewRef.current !== "topack") switchView("topack"); }, [clearanceOn]);
   // Everything still in To pack (all Shopify orders + all Trade Me parcels,
   // ignoring the view filters), as packages, matched to packed bags. A bag
@@ -894,7 +899,7 @@ export default function PackCheck() {
       const sendState = sendClearance(customerOrders).state;
       const bm = matchBags(packageIdentity(customerOrders), waitingBags);
       const bagMark = !clearanceOn || !bm ? "" : bm.kind === "definite" ? " ➕ Add to existing bag" : bm.kind === "suggest" ? " ➕? existing bag" : " ❔ bag";
-      const sendMark = sendState === "cleared" ? "" : sendState === "payment_outstanding" ? " 💳 prepack" : sendState === "blocked" ? " ⛔" : sendState === "shipping_not_cleared" ? " 📮" : " ❔";
+      const sendMark = !clearanceOn || sendState === "cleared" ? "" : sendState === "payment_outstanding" ? " 💳 prepack" : sendState === "blocked" ? " ⛔" : sendState === "shipping_not_cleared" ? " 📮" : " ❔";
       const totalLines = customerOrders.reduce((s, o) => s + o.lineItems.length, 0);
       const orderCount = customerOrders.length;
       const orderLabel = orderCount > 1 ? `${orderCount} orders` : customerOrders[0].name;
@@ -952,12 +957,12 @@ export default function PackCheck() {
               </ButtonGroup>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              {clearanceAvailable && (
+              {(clearanceOn || clearanceAvailable) && (
                 <Button onClick={toggleTradeMe} pressed={includeTradeMe}>
                   {`${includeTradeMe ? "✓ " : ""}Clearance week (${clearanceCount})`}
                 </Button>
               )}
-              <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>
+              {clearanceOn && <Button onClick={toggleShowTradeMe} pressed={showTradeMe}>{showTradeMe ? "✓ Trade Me" : "Trade Me hidden"}</Button>}
               <button
                 type="button"
                 onClick={() => setMuted(m => !m)}
@@ -1092,7 +1097,7 @@ export default function PackCheck() {
 
         {/* ── SEND STATUS (prepacking): packing is always allowed; this says
              whether the parcel may be sent once packed. ── */}
-        {currentClearance && (
+        {clearanceOn && currentClearance && (
           <Layout.Section>
             <div style={{ background: CLEARANCE_STYLE[currentClearance.state].bg, color: CLEARANCE_STYLE[currentClearance.state].text, borderRadius: 10, padding: "12px 20px", display: "flex", alignItems: "center", gap: 12 }}>
               <span style={{ fontSize: 24 }}>{CLEARANCE_STYLE[currentClearance.state].icon}</span>
@@ -1168,7 +1173,7 @@ export default function PackCheck() {
                 </div>
                 <InlineStack gap="200">
                   <Button variant="primary" size="large" loading={recording} onClick={moveToNextOrder}>
-                    📦 Packed — Next Order →
+                    {clearanceOn ? "📦 Packed — Next Order →" : "Next Order →"}
                   </Button>
                 </InlineStack>
               </div>

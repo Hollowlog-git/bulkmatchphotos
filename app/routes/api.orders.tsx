@@ -152,11 +152,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // aren't to pack either, even though Shopify still shows them unfulfilled.
     const sentOrders = (await loadSentIndex(session.shop)).orders;
 
+    // Two modes. Clearance week (?mode=clearance): unpaid orders are shown
+    // for prepacking and orders recorded as packed are hidden. Normal: as
+    // originally — paid orders only, and an order stays listed until it's
+    // dispatched (fulfilled in Shopify, or reported sent by the local app),
+    // whether or not it was packed.
+    const clearance = new URL(request.url).searchParams.get("mode") === "clearance";
+
     const orders = edgesAll.slice(0, MAX_ORDERS)
-      .filter((edge: any) => !packedIds.has(edge.node.id) && !sentOrders.has(edge.node.id))
+      .filter((edge: any) => !sentOrders.has(edge.node.id))
+      .filter((edge: any) => !clearance || !packedIds.has(edge.node.id))
       .filter((edge: any) => !edge.node.cancelledAt)
-      // Unpaid (pending) orders are included so they can be prepacked;
-      // Pack Check marks them "payment outstanding — do not send".
+      .filter((edge: any) => clearance || edge.node.displayFinancialStatus !== "PENDING")
       .map((edge: any) => {
         const o = edge.node;
         const shippingOriginal = parseFloat(o.shippingLine?.originalPriceSet?.shopMoney?.amount ?? "0");
